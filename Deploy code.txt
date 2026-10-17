@@ -1,0 +1,23 @@
+powershell -ExecutionPolicy Bypass -File "c:\restaurant-platform\restaurant-platform\deploy-online.ps1"
+
+
+
+powershell -ExecutionPolicy Bypass -File "c:\restaurant-platform\restaurant-platform\quick-deploy.ps1"
+powershell -ExecutionPolicy Bypass -File "c:\restaurant-platform\restaurant-platform\quick-deploy.ps1" -FrontendOnly
+powershell -ExecutionPolicy Bypass -File "c:\restaurant-platform\restaurant-platform\quick-deploy.ps1" -BackendOnly
+
+
+Login
+Front end
+cd c:\restaurant-platform\restaurant-platform\frontend
+npm run build
+npx vercel@latest login
+npx vercel@latest --prod --yes
+
+Backend
+cd c:\restaurant-platform\restaurant-platform\backend
+npm run build
+npx @railway/cli@latest login
+npx @railway/cli@latest link
+npx @railway/cli@latest up --detach
+npx @railway/cli@latest domain

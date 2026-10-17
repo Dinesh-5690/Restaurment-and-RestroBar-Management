@@ -1,0 +1,15 @@
+**/node_modules/
+**/dist/
+**/.next/
+**/.env
+**/.env.*
+!**/.env.example
+*.tsbuildinfo
+*.db
+*.sqlite
+*.sqlite3
+*.zip
+/backend/compile-files.txt
+/backend/compile-log.txt
+/backend/emitted.txt
+/backend/files.txt

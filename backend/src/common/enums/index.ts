@@ -1,0 +1,84 @@
+export enum UserRole {
+  ADMIN = 'ADMIN',
+  MANAGER = 'MANAGER',
+  CASHIER = 'CASHIER',
+  WAITER = 'WAITER',
+  KITCHEN = 'KITCHEN',
+}
+
+export enum TableStatus {
+  FREE = 'FREE',
+  OCCUPIED = 'OCCUPIED',
+  RESERVED = 'RESERVED',
+}
+
+export enum OrderType {
+  DINE_IN = 'DINE_IN',
+  TAKE_AWAY = 'TAKE_AWAY',
+  ONLINE = 'ONLINE',
+  QR = 'QR',
+}
+
+export enum OrderStatus {
+  CREATED = 'CREATED',
+  APPROVAL_PENDING = 'APPROVAL_PENDING',
+  APPROVED = 'APPROVED',
+  COOKING = 'COOKING',
+  READY = 'READY',
+  COMPLETED = 'COMPLETED',
+  CANCELLED = 'CANCELLED',
+}
+
+export enum OrderItemStatus {
+  PENDING = 'PENDING',
+  QUEUED = 'QUEUED',
+  COOKING = 'COOKING',
+  READY = 'READY',
+  SERVED = 'SERVED',
+}
+
+export enum PaymentMethod {
+  CASH = 'CASH',
+  QR = 'QR',
+  CARD = 'CARD',
+  SPLIT = 'SPLIT',
+  UNKNOWN = 'UNKNOWN',
+}
+
+export enum SettlementStatus {
+  PAID = 'PAID',
+  UNPAID = 'UNPAID',
+  CANCELLED = 'CANCELLED',
+  REFUNDED = 'REFUNDED',
+}
+
+export enum KitchenBatchStatus {
+  WAITING = 'WAITING',
+  FIRED = 'FIRED',
+  DONE = 'DONE',
+}
+
+export enum ReservationStatus {
+  PENDING = 'PENDING',
+  CONFIRMED = 'CONFIRMED',
+  SEATED = 'SEATED',
+  COMPLETED = 'COMPLETED',
+  CANCELLED = 'CANCELLED',
+  NO_SHOW = 'NO_SHOW',
+}
+
+export enum SocketEvent {
+  ORDER_CREATED = 'ORDER_CREATED',
+  ORDER_APPROVED = 'ORDER_APPROVED',
+  ORDER_REJECTED = 'ORDER_REJECTED',
+  ORDER_FIRED = 'ORDER_FIRED',
+  ORDER_COMPLETED = 'ORDER_COMPLETED',
+  ORDER_CANCELLED = 'ORDER_CANCELLED',
+  ORDER_TRANSFERRED = 'ORDER_TRANSFERRED',
+  ORDER_UPDATED = 'ORDER_UPDATED',
+  ITEM_COOKING = 'ITEM_COOKING',
+  ITEM_READY = 'ITEM_READY',
+  ITEM_SERVED = 'ITEM_SERVED',
+  TABLE_UPDATED = 'TABLE_UPDATED',
+  KITCHEN_ALERT = 'KITCHEN_ALERT',
+}
