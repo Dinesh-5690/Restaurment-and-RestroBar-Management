@@ -129,18 +129,18 @@ export default function DashboardPage() {
   const maxWeekQty      = data?.topItemsWeek[0]?.qty   ?? 1;
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50/30 to-white">
+    <main className="min-h-screen bg-gradient-to-br from-[#edf3ef] via-[#f7f7f2] to-white">
       <div className="max-w-[1400px] mx-auto px-3 sm:px-6 py-6">
 
         {/* ── Header ── */}
-        <header className="flex items-center justify-between mb-6">
+        <header className="flex items-center justify-between mb-6 rounded-2xl bg-cover bg-center px-5 py-5 shadow-lg" style={{ backgroundImage: "linear-gradient(90deg, rgba(4,18,13,.94), rgba(4,18,13,.68)), url('/dineflow-premium-background.webp')" }}>
           <div className="flex items-center gap-3">
             <Link href="/" className="p-2 rounded-lg hover:bg-white/70 border border-transparent hover:border-gray-200">
               <ArrowLeft className="w-4 h-4 text-gray-600" />
             </Link>
             <div>
-              <h1 className="text-2xl sm:text-3xl font-black text-orange-600 tracking-tight">Dashboard</h1>
-              <p className="text-[11px] text-gray-400">
+              <h1 className="text-2xl sm:text-3xl font-serif font-black text-white tracking-tight">Dashboard</h1>
+              <p className="text-[11px] text-white/70">
                 {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                 {lastRefresh && ` · Refreshed ${lastRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
                 {' · Auto-refreshes every 30s'}
@@ -149,7 +149,7 @@ export default function DashboardPage() {
           </div>
           <button
             onClick={load}
-            className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"
+            className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-[#07150f] hover:bg-amber-400 shadow-lg shadow-black/20"
           >
             <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
             Refresh

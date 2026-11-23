@@ -12,12 +12,16 @@ import clsx from 'clsx';
 export default function ApprovalPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const fetchPending = useCallback(async () => {
     setLoading(true);
     try {
       const r = await approvalApi.pending();
       setOrders(r.data);
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err.response?.data?.message || 'Could not load approval orders. Check your approval access and try again.');
     } finally {
       setLoading(false);
     }
@@ -53,6 +57,7 @@ export default function ApprovalPage() {
 
   const qrOrders = orders.filter((o) => o.orderType === 'QR');
   const onlineOrders = orders.filter((o) => o.orderType === 'ONLINE');
+  const otherOrders = orders.filter((o) => o.orderType === 'DINE_IN');
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -83,7 +88,13 @@ export default function ApprovalPage() {
       </header>
 
       <main className="p-6">
-        {orders.length === 0 && !loading && (
+        {loadError && (
+          <div className="mx-auto mb-6 max-w-3xl rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
+            {loadError}
+          </div>
+        )}
+
+        {orders.length === 0 && !loading && !loadError && (
           <div className="flex flex-col items-center justify-center py-24 text-gray-400">
             <CheckCircle className="w-16 h-16 mb-4 text-green-300" />
             <p className="text-xl font-medium text-gray-600">All clear!</p>
@@ -92,6 +103,7 @@ export default function ApprovalPage() {
         )}
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 max-w-6xl mx-auto">
+          {otherOrders.length > 0 && <section><h2 className="font-semibold text-gray-700 mb-4">Dine-In Orders</h2><div className="space-y-4">{otherOrders.map((order)=><ApprovalCard key={order.id} order={order} onAction={fetchPending}/>)}</div></section>}
           {/* QR Orders — compact 2-col grid */}
           {qrOrders.length > 0 && (
             <section>

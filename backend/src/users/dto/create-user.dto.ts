@@ -2,7 +2,7 @@ import { IsString, IsEnum, MinLength, IsOptional, IsNumber, Min, IsArray, ArrayU
 import { UserRole } from '../../common/enums';
 
 export type SalaryType = 'MONTHLY' | 'DAILY' | 'WEEKLY' | 'BIWEEKLY';
-export type AccessRight = 'DASHBOARD' | 'POS' | 'KITCHEN' | 'APPROVAL' | 'TABLES' | 'KIOSK' | 'ADMIN';
+export type AccessRight = 'DASHBOARD' | 'POS' | 'KITCHEN' | 'KITCHEN_INVENTORY' | 'BEVERAGES' | 'BOTTLE_MANAGEMENT' | 'APPROVAL' | 'TABLES' | 'KIOSK' | 'ADMIN';
 
 export class CreateUserDto {
   @IsString()
@@ -31,7 +31,7 @@ export class CreateUserDto {
   @IsOptional()
   @IsArray()
   @ArrayUnique()
-  @IsIn(['DASHBOARD', 'POS', 'KITCHEN', 'APPROVAL', 'TABLES', 'KIOSK', 'ADMIN'], { each: true })
+  @IsIn(['DASHBOARD', 'POS', 'KITCHEN', 'KITCHEN_INVENTORY', 'BEVERAGES', 'BOTTLE_MANAGEMENT', 'APPROVAL', 'TABLES', 'KIOSK', 'ADMIN'], { each: true })
   accessRights?: AccessRight[];
 
   @IsEnum(UserRole)

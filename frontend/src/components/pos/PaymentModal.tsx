@@ -22,6 +22,8 @@ export interface ReceiptItem {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  isBeverage?: boolean;
+  bottleSizeMl?: number;
   notes?: string;
   addonSummary?: string;
   addOns?: ReceiptAddon[];
@@ -223,6 +225,8 @@ export default function PaymentModal({ label, amount, orderIds, items, billNo, m
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       lineTotal: item.lineTotal,
+      isBeverage: item.isBeverage,
+      bottleSizeMl: item.bottleSizeMl,
       notes: item.notes,
       addOns: item.addOns?.map((addon) => ({
         addonName: addon.addonName,
@@ -237,6 +241,8 @@ export default function PaymentModal({ label, amount, orderIds, items, billNo, m
         quantity: item.quantity,
         unitPrice: item.unitPrice,
         lineTotal: item.lineTotal,
+        isBeverage: item.isBeverage,
+        bottleSizeMl: item.bottleSizeMl,
         notes: item.notes,
         addOns: item.addOns?.map((addon) => ({
           addonName: addon.addonName,
@@ -322,6 +328,13 @@ export default function PaymentModal({ label, amount, orderIds, items, billNo, m
     printSettings.email,
   ].filter((part) => part && part.trim().length > 0);
   const totalQty = receiptItems.reduce((sum, item) => sum + item.quantity, 0);
+  const totalBeverageQty = receiptItems
+    .filter((item) => item.isBeverage)
+    .reduce((sum, item) => sum + item.quantity, 0);
+  const beverageVolumeMl = receiptItems
+    .filter((item) => item.isBeverage)
+    .reduce((sum, item) => sum + Number(item.bottleSizeMl || 0) * Number(item.quantity || 0), 0);
+  const formatVolume = (ml: number) => ml >= 1000 ? `${ml}ml (${(ml / 1000).toFixed(2)} Litres)` : `${ml}ml`;
   const printedAt = new Date();
   const printedDate = printedAt.toLocaleDateString();
   const printedTime = printedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -686,7 +699,7 @@ export default function PaymentModal({ label, amount, orderIds, items, billNo, m
                       {group.items.map((item, index) => (
                         <div key={`${group.billLabel}-${item.menuItemName}-${index}`} className="border-b border-dashed border-black/20 py-1">
                           <div className="grid grid-cols-[26px_1fr_44px_44px] gap-1">
-                            <span>{item.quantity}x</span>
+                            <span>{item.quantity}x{item.isBeverage && item.bottleSizeMl ? <div>{item.quantity * item.bottleSizeMl}ml</div> : null}</span>
                             <span className="font-semibold leading-tight">{item.menuItemName}</span>
                             <span className="text-right">{item.unitPrice.toFixed(2)}</span>
                             <span className="text-right font-semibold">{item.lineTotal.toFixed(2)}</span>
@@ -704,7 +717,7 @@ export default function PaymentModal({ label, amount, orderIds, items, billNo, m
                   receiptItems.map((item, index) => (
                     <div key={`${item.menuItemName}-${index}`} className="border-b border-dashed border-black/20 py-1">
                       <div className="grid grid-cols-[26px_1fr_44px_44px] gap-1">
-                        <span>{item.quantity}x</span>
+                        <span>{item.quantity}x{item.isBeverage && item.bottleSizeMl ? <div>{item.quantity * item.bottleSizeMl}ml</div> : null}</span>
                         <span className="font-semibold leading-tight">{item.menuItemName}</span>
                         <span className="text-right">{item.unitPrice.toFixed(2)}</span>
                         <span className="text-right font-semibold">{item.lineTotal.toFixed(2)}</span>
@@ -721,7 +734,16 @@ export default function PaymentModal({ label, amount, orderIds, items, billNo, m
               <div className="receipt-print-line" />
 
               <div className="text-[9px]">
-                <div className="flex justify-between py-0.5"><span>Tot Qty: {totalQty}</span><span>Subtotal: {formatCurrency(amount)}</span></div>
+                <div className="flex justify-between py-0.5">
+                  <span>{totalBeverageQty > 0 ? `Total Bottles: ${totalBeverageQty}` : `Total Quantity: ${totalQty}`}</span>
+                  <span>Subtotal: {formatCurrency(amount)}</span>
+                </div>
+                {totalBeverageQty > 0 && (
+                  <div className="flex justify-between py-0.5">
+                    <span>Total Beverage Volume</span>
+                    <span>{formatVolume(beverageVolumeMl)}</span>
+                  </div>
+                )}
                 {couponPreview && (
                   <div className="flex justify-between py-0.5"><span>Coupon ({couponPreview.code})</span><span>-{formatCurrency(couponPreview.discountAmount)}</span></div>
                 )}

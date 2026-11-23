@@ -15,7 +15,7 @@ export class AuthService {
   async validateUser(username: string, password: string): Promise<User> {
     const user = await this.usersService.findByUsername(username);
     if (!user) {
-      if (username === 'admin' && password === 'admin123') {
+      if (process.env.NODE_ENV !== 'production' && username === 'admin' && password === 'admin123') {
         return {
           id: 'admin-default',
           username: 'admin',

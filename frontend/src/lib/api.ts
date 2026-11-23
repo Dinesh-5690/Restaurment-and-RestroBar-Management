@@ -1,9 +1,11 @@
 import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+// Accept either the API origin or an origin that already ends in /api.
+const API_BASE_URL = API_URL.replace(/\/+$/, '').replace(/\/api$/i, '');
 
 const api = axios.create({
-  baseURL: `${API_URL}/api`,
+  baseURL: `${API_BASE_URL}/api`,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -138,11 +140,75 @@ export const approvalApi = {
   reject: (orderId: string, reason: string) =>
     api.post(`/approval/${orderId}/reject`, { reason }),
   hold: (orderId: string) => api.post(`/approval/${orderId}/hold`),
+  editItem: (orderId: string, itemId: string, data: {
+    menuItemName: string;
+    quantity: number;
+    category: 'FOOD' | 'BEVERAGE';
+    unitPrice: number;
+    notes?: string;
+    servingSize?: string;
+    bottleSizeMl?: number;
+    bottleOrderFlag?: boolean;
+  }) => api.patch(`/approval/${orderId}/items/${itemId}`, data),
+  approveItem: (orderId: string, itemId: string) =>
+    api.post(`/approval/${orderId}/items/${itemId}/approve`),
+  rejectItem: (orderId: string, itemId: string, reason: string) =>
+    api.post(`/approval/${orderId}/items/${itemId}/reject`, { reason }),
+  removeItem: (orderId: string, itemId: string, reason: string) =>
+    api.delete(`/approval/${orderId}/items/${itemId}`, { data: { reason } }),
+  itemHistory: (orderId: string) => api.get(`/approval/${orderId}/history`),
+};
+
+// ==================== Beverages ====================
+export const beveragesApi = {
+  categories: () => api.get('/beverages/categories'),
+  createCategory: (data: any) => api.post('/beverages/categories', data),
+  updateCategory: (id: string, data: any) => api.patch(`/beverages/categories/${id}`, data),
+  removeCategory: (id: string) => api.delete(`/beverages/categories/${id}`),
+  products: (search?: string) => api.get('/beverages/products', { params: search ? { search } : {} }),
+  getProduct: (id: string) => api.get(`/beverages/products/${id}`),
+  createProduct: (data: any) => api.post('/beverages/products', data),
+  updateProduct: (id: string, data: any) => api.patch(`/beverages/products/${id}`, data),
+  removeProduct: (id: string) => api.delete(`/beverages/products/${id}`),
+  adjustStock: (id: string, quantityMl: number, referenceId?: string) => api.post(`/beverages/products/${id}/stock-adjustment`, { quantityMl, referenceId }),
+  transactions: (beverageId?: string) => api.get('/beverages/stock/transactions', { params: beverageId ? { beverageId } : {} }),
+};
+
+// ==================== Kitchen Inventory ====================
+export const kitchenInventoryApi = {
+  dashboard: () => api.get('/kitchen-inventory/dashboard'),
+  materials: (params?: any) => api.get('/kitchen-inventory/materials', { params }),
+  getMaterial: (id: string) => api.get(`/kitchen-inventory/materials/${id}`),
+  createMaterial: (data: any) => api.post('/kitchen-inventory/materials', data),
+  updateMaterial: (id: string, data: any) => api.patch(`/kitchen-inventory/materials/${id}`, data),
+  deleteMaterial: (id: string) => api.delete(`/kitchen-inventory/materials/${id}`),
+  stockIn: (id: string, data: any) => api.post(`/kitchen-inventory/materials/${id}/in`, data),
+  stockOut: (id: string, data: any) => api.post(`/kitchen-inventory/materials/${id}/out`, data),
+  transactions: (params?: any) => api.get('/kitchen-inventory/transactions', { params }),
+  batches: (materialId?: string) => api.get('/kitchen-inventory/batches', { params: materialId ? { materialId } : {} }),
+  categories: () => api.get('/kitchen-inventory/categories'),
+  suggestions: (categoryId: string, search?: string) => api.get('/kitchen-inventory/suggestions', { params: { categoryId, search } }),
+  suppliers: () => api.get('/kitchen-inventory/suppliers'),
+  alerts: (resolved = false) => api.get('/kitchen-inventory/alerts', { params: { resolved } }),
+  resolveAlert: (id: string) => api.patch(`/kitchen-inventory/alerts/${id}/resolve`),
+};
+
+// ==================== Bottle Management ====================
+export const bottleManagementApi = {
+  bottles: (beverageId?: string) => api.get('/bottle-management/bottles', { params: beverageId ? { beverageId } : {} }),
+  details: (code: string) => api.get(`/bottle-management/bottles/details/${encodeURIComponent(code)}`),
+  verify: (qrIdentifier: string) => api.post('/bottle-management/verify', { qrIdentifier }),
+  scan: (qrIdentifier: string, operation: 'IN'|'OUT') => api.post('/bottle-management/scan', { qrIdentifier, operation }),
+  stockIn: (bottleCode: string, quantityMl: number, remarks?: string, beverageId?: string, batchId?: string, bottleSizeMl?: number) => api.post('/bottle-management/in', { bottleCode, quantityMl, remarks, beverageId, batchId, bottleSizeMl }),
+  stockOut: (bottleCode: string, quantityMl: number, remarks?: string) => api.post('/bottle-management/out', { bottleCode, quantityMl, remarks }),
+  history: (params?: { from?: string; to?: string; operationType?: string; beverageId?: string; bottleId?: string }) => api.get('/bottle-management/history', { params }),
 };
 
 // ==================== QR ====================
 export const qrApi = {
   getMenu: (qrCodeId: string) => api.get(`/qr/${qrCodeId}/menu`),
+  activeOrder: (qrCodeId: string) => api.get(`/qr/${qrCodeId}/active-order`),
+  session: (qrCodeId: string) => api.get(`/qr/${qrCodeId}/session`),
 };
 
 // ==================== Kiosk ====================

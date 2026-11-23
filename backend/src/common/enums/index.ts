@@ -4,6 +4,7 @@ export enum UserRole {
   CASHIER = 'CASHIER',
   WAITER = 'WAITER',
   KITCHEN = 'KITCHEN',
+  BEVERAGE_MANAGER = 'BEVERAGE_MANAGER',
 }
 
 export enum TableStatus {
@@ -35,6 +36,15 @@ export enum OrderItemStatus {
   COOKING = 'COOKING',
   READY = 'READY',
   SERVED = 'SERVED',
+  REJECTED = 'REJECTED',
+  REMOVED = 'REMOVED',
+}
+
+export enum OrderItemApprovalStatus {
+  PENDING = 'PENDING',
+  APPROVED = 'APPROVED',
+  REJECTED = 'REJECTED',
+  REMOVED = 'REMOVED',
 }
 
 export enum PaymentMethod {

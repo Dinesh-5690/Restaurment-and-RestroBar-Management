@@ -3,8 +3,8 @@ import './globals.css';
 import { Toaster } from 'react-hot-toast';
 
 export const metadata: Metadata = {
-  title: 'Restaurant Platform',
-  description: 'Enterprise Restaurant Management System',
+  title: 'DineFlow | Restaurant & Bar Management',
+  description: 'Premium Restaurant and Bar Management System',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -3,6 +3,7 @@
 -- Import this file via Hostinger phpMyAdmin or cPanel MySQL
 -- NOTE: If you set synchronize:true in .env, TypeORM will
 --       auto-create these tables. This file is a backup/reference.
+-- Existing MySQL installs should apply backend/migrations/20261117-qr-session-orders.sql once.
 -- ============================================================
 
 SET FOREIGN_KEY_CHECKS = 0;
@@ -92,6 +93,8 @@ CREATE TABLE IF NOT EXISTS `orders` (
   `id`              varchar(36)  NOT NULL,
   `orderType`       varchar(20)  NOT NULL,
   `tableId`         varchar(36)  NULL,
+  `sessionId`       varchar(36)  NULL,
+  `clientRequestId` varchar(36)  NULL,
   `tableNumber`     int          NULL,
   `status`          varchar(30)  NOT NULL DEFAULT 'CREATED',
   `subtotal`        float        NOT NULL DEFAULT 0,
@@ -109,7 +112,9 @@ CREATE TABLE IF NOT EXISTS `orders` (
   `createdAt`       datetime(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   `updatedAt`       datetime(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`id`),
+  UNIQUE KEY `UQ_orders_clientRequestId` (`clientRequestId`),
   KEY `IDX_orders_status`       (`status`),
+  KEY `IDX_orders_table_session` (`tableId`, `sessionId`),
   KEY `IDX_orders_mergeGroupId` (`mergeGroupId`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

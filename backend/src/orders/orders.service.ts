@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { CreateOrderDto, CreateOrderItemDto, SelectedOrderItemAddonDto } from './dto/create-order.dto';
@@ -11,6 +11,7 @@ import {
   OrderStatus,
   OrderType,
   OrderItemStatus,
+  OrderItemApprovalStatus,
   SocketEvent,
   PaymentMethod,
   SettlementStatus,
@@ -19,6 +20,9 @@ import { KitchenBatch } from '../kitchen/entities/kitchen-batch.entity';
 import { KitchenBatchItem } from '../kitchen/entities/kitchen-batch-item.entity';
 import { Coupon } from '../coupons/entities/coupon.entity';
 import { CouponDiscountType } from '../coupons/entities/coupon.entity';
+import { BeveragesService } from '../beverages/beverages.service';
+import { v4 as uuidv4 } from 'uuid';
+import { UpdateApprovalItemDto } from './dto/update-approval-item.dto';
 
 @Injectable()
 export class OrdersService {
@@ -36,6 +40,7 @@ export class OrdersService {
     private readonly menuService: MenuService,
     private readonly tablesService: TablesService,
     private readonly eventsService: EventsService,
+    private readonly beveragesService: BeveragesService,
   ) {}
 
   private computeDiscount(coupon: Coupon, grossAmount: number): number {
@@ -106,7 +111,39 @@ export class OrdersService {
     sourceBillNo?: string,
     orderId?: string,
   ): Promise<{ item: Partial<OrderItem>; subtotal: number; tax: number }> {
-    const menuItem = await this.menuService.findItem(itemDto.menuItemId);
+    if (itemDto.beverageId) {
+      const beverage = await this.beveragesService.getProduct(itemDto.beverageId);
+      const bottle = itemDto.bottleOrderFlag === true;
+      const servingSize = itemDto.servingSize?.toUpperCase() ?? '30ML';
+      const unitPrice = bottle ? Number(beverage.bottlePrice)
+        : servingSize === '60ML' ? Number(beverage.price60ml)
+        : servingSize === '90ML' ? Number(beverage.price90ml)
+        : Number(beverage.price30ml);
+      const lineTotal = Number((unitPrice * itemDto.quantity).toFixed(2));
+      return {
+        item: {
+          orderId,
+          menuItemId: beverage.id,
+          menuItemName: `${beverage.brand}${beverage.productName ? ` ${beverage.productName}` : ''} · ${bottle ? (Number(beverage.bottleSize) === 180 ? 'Quarter - 180ml' : Number(beverage.bottleSize) === 375 ? 'Half - 375ml' : 'Full - 750ml') : servingSize}`,
+          quantity: itemDto.quantity,
+          unitPrice,
+          lineTotal,
+          addonTotal: 0,
+          sourceBillNo,
+          routingDestination: 'BILLING',
+          beverageId: beverage.id,
+          bottleSizeMl: bottle ? Number(beverage.bottleSize) : undefined,
+          servingSize: bottle ? 'BOTTLE' : servingSize,
+          bottleOrderFlag: bottle,
+          notes: itemDto.notes,
+          status: OrderItemStatus.PENDING,
+        },
+        subtotal: lineTotal,
+        tax: 0,
+      };
+    }
+
+    const menuItem = await this.menuService.findItem(itemDto.menuItemId!);
     if (!menuItem.isAvailable) {
       throw new BadRequestException(`Item "${menuItem.name}" is currently unavailable`);
     }
@@ -161,6 +198,7 @@ export class OrdersService {
         addOns: addOns as any,
         sourceBillNo,
         kitchenStation: menuItem.category?.kitchenStation,
+        routingDestination: 'KITCHEN',
         notes: itemDto.notes,
         status: OrderItemStatus.PENDING,
       },
@@ -170,40 +208,39 @@ export class OrdersService {
   }
 
   async create(dto: CreateOrderDto): Promise<Order> {
-    if (dto.tableId) {
-      await this.tablesService.findOne(dto.tableId);
+    if (dto.clientRequestId) {
+      const duplicate = await this.orderRepo.findOne({
+        where: { clientRequestId: dto.clientRequestId },
+      });
+      if (duplicate) {
+        if (duplicate.orderType !== dto.orderType || duplicate.tableId !== dto.tableId) {
+          throw new BadRequestException('This request ID has already been used for another order');
+        }
+        return duplicate;
+      }
     }
 
-    // For repeat table QR orders, keep adding to the same active bill.
-    if (dto.orderType === OrderType.QR && dto.tableId) {
-      const existingQrOrder = await this.orderRepo.findOne({
-        where: {
-          tableId: dto.tableId,
-          orderType: OrderType.QR,
-          status: In([
-            OrderStatus.APPROVAL_PENDING,
-            OrderStatus.APPROVED,
-            OrderStatus.COOKING,
-            OrderStatus.READY,
-          ]),
-        },
-        order: { createdAt: 'DESC' },
-      });
+    if (dto.sessionId && dto.orderType !== OrderType.QR) {
+      throw new BadRequestException('Only QR orders can specify a table session');
+    }
+    if (dto.orderType === OrderType.QR && !dto.tableId) {
+      throw new BadRequestException('QR orders require a table');
+    }
 
-      if (existingQrOrder) {
-        const { order: updatedOrder } = await this.addItems(existingQrOrder.id, dto.items);
+    const table = dto.tableId ? await this.tablesService.findOne(dto.tableId) : undefined;
+    const orderId = dto.orderType === OrderType.QR || (dto.orderType === OrderType.DINE_IN && table)
+      ? uuidv4()
+      : undefined;
+    let qrSessionId: string | undefined;
 
-        if (updatedOrder.status !== OrderStatus.APPROVAL_PENDING) {
-          const reopened = await this.updateOrderStatus(updatedOrder.id, OrderStatus.APPROVAL_PENDING);
-          this.eventsService.emit(SocketEvent.ORDER_UPDATED, reopened);
-          this.eventsService.emitToOrder(reopened.id, SocketEvent.ORDER_UPDATED, reopened);
-          this.eventsService.emitToRoom('approval:hub', SocketEvent.ORDER_UPDATED, reopened);
-          this.eventsService.emitToRoom('pos:all', SocketEvent.ORDER_UPDATED, reopened);
-          return reopened;
-        }
+    if (dto.orderType === OrderType.QR && table && orderId) {
+      const currentSessionId = await this.resolveQrSessionId(table.id, table.currentOrderId);
 
-        return updatedOrder;
+      if (dto.sessionId && dto.sessionId !== currentSessionId) {
+        throw new BadRequestException('This table session is no longer active. Refresh the QR page and try again.');
       }
+
+      qrSessionId = currentSessionId ?? orderId;
     }
 
     const billNo = await this.generateBillNo();
@@ -219,18 +256,34 @@ export class OrdersService {
       orderItems.push(built.item);
     }
 
+    if (dto.orderType === OrderType.QR && table && qrSessionId && orderId) {
+      const expectedCurrentOrderId = table.currentOrderId || undefined;
+      const claimedSessionId = await this.tablesService.claimQrSession(
+        table.id,
+        qrSessionId,
+        expectedCurrentOrderId,
+      );
+      qrSessionId = await this.resolveQrSessionId(table.id, claimedSessionId) ?? claimedSessionId;
+      if (dto.sessionId && qrSessionId !== dto.sessionId) {
+        throw new BadRequestException('This table session is no longer active. Refresh the QR page and try again.');
+      }
+    }
+
     const initialStatus =
-      dto.orderType === OrderType.DINE_IN || dto.orderType === OrderType.TAKE_AWAY
-        ? OrderStatus.CREATED
-        : OrderStatus.APPROVAL_PENDING;
+      dto.orderType === OrderType.ONLINE || dto.orderType === OrderType.QR
+        ? OrderStatus.APPROVAL_PENDING
+        : OrderStatus.CREATED;
 
     let tableNumber: string | undefined;
-    if (dto.tableId && dto.orderType === OrderType.DINE_IN) {
-      const table = await this.tablesService.findOne(dto.tableId);
+    if (table && (dto.orderType === OrderType.DINE_IN || dto.orderType === OrderType.QR)) {
       tableNumber = table.tableNumber;
     }
 
     const order = this.orderRepo.create({
+      id: orderId,
+      sessionId: qrSessionId
+        ?? (dto.orderType === OrderType.DINE_IN && table ? orderId : undefined),
+      clientRequestId: dto.clientRequestId,
       billNo,
       orderType: dto.orderType,
       tableId: dto.tableId,
@@ -246,7 +299,45 @@ export class OrdersService {
       items: orderItems as OrderItem[],
     });
 
-    const saved = await this.orderRepo.save(order);
+    let saved: Order;
+    try {
+      saved = await this.orderRepo.save(order);
+    } catch (error) {
+      if (dto.clientRequestId) {
+        const duplicate = await this.orderRepo.findOne({
+          where: { clientRequestId: dto.clientRequestId },
+        });
+        if (duplicate) {
+          if (duplicate.orderType !== dto.orderType || duplicate.tableId !== dto.tableId) {
+            throw new BadRequestException('This request ID has already been used for another order');
+          }
+          return duplicate;
+        }
+      }
+      throw error;
+    }
+
+    for (const savedItem of saved.items ?? []) {
+      if (!savedItem.beverageId && savedItem.routingDestination !== 'BILLING') {
+        savedItem.routingDestination = 'KITCHEN';
+        await this.itemRepo.save(savedItem);
+      } else if (
+        savedItem.status === OrderItemStatus.PENDING &&
+        (savedItem.beverageId || savedItem.routingDestination === 'BILLING') &&
+        initialStatus !== OrderStatus.APPROVAL_PENDING
+      ) {
+        const readyItem = await this.updateItemStatus(savedItem.id, OrderItemStatus.READY);
+        savedItem.status = readyItem.status;
+      }
+    }
+
+    if (saved.items?.some((item) => item.routingDestination === 'BILLING') && saved.items?.some((item) => item.routingDestination === 'KITCHEN')) {
+      saved.routingDestination = 'MIXED';
+      await this.orderRepo.save(saved);
+    } else if (saved.items?.some((item) => item.routingDestination === 'BILLING')) {
+      saved.routingDestination = 'BILLING';
+      await this.orderRepo.save(saved);
+    }
 
     if (dto.tableId && dto.orderType === OrderType.DINE_IN) {
       await this.tablesService.setOccupied(dto.tableId, saved.id);
@@ -254,6 +345,9 @@ export class OrdersService {
 
     // Emit socket events
     this.eventsService.emit(SocketEvent.ORDER_CREATED, saved);
+    if (saved.sessionId) {
+      this.eventsService.emitToRoom(`session:${saved.sessionId}`, SocketEvent.ORDER_CREATED, saved);
+    }
     if (initialStatus === OrderStatus.APPROVAL_PENDING) {
       this.eventsService.emitToRoom('approval:hub', SocketEvent.ORDER_CREATED, saved);
     }
@@ -282,6 +376,21 @@ export class OrdersService {
     }
 
     const savedItems = await this.itemRepo.save(orderItems as OrderItem[]);
+    for (const savedItem of savedItems) {
+      if (!savedItem.beverageId && savedItem.routingDestination !== 'BILLING') {
+        savedItem.routingDestination = 'KITCHEN';
+        await this.itemRepo.save(savedItem);
+      } else if (
+        savedItem.status === OrderItemStatus.PENDING &&
+        (savedItem.beverageId || savedItem.routingDestination === 'BILLING') &&
+        ![OrderType.QR, OrderType.ONLINE].includes(order.orderType)
+      ) {
+        const readyItem = await this.updateItemStatus(savedItem.id, OrderItemStatus.READY);
+        savedItem.status = readyItem.status;
+      }
+    }
+    if (savedItems.some((item) => item.routingDestination === 'BILLING') && order.items?.some((item) => item.routingDestination === 'KITCHEN')) order.routingDestination = 'MIXED';
+    else if (savedItems.some((item) => item.routingDestination === 'BILLING')) order.routingDestination = 'BILLING';
     order.items = [...order.items, ...savedItems];
     order.subtotal = Number((order.subtotal + addedSubtotal).toFixed(2));
     order.taxAmount = Number((order.taxAmount + addedTax).toFixed(2));
@@ -294,6 +403,8 @@ export class OrdersService {
     this.eventsService.emit(SocketEvent.ORDER_UPDATED, saved);
     this.eventsService.emitToOrder(saved.id, SocketEvent.ORDER_UPDATED, saved);
     this.eventsService.emitToRoom('pos:all', SocketEvent.ORDER_UPDATED, saved);
+    const sessionId = this.getTableSessionId(saved);
+    if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, SocketEvent.ORDER_UPDATED, saved);
     if (saved.status === OrderStatus.APPROVAL_PENDING) {
       this.eventsService.emitToRoom('approval:hub', SocketEvent.ORDER_UPDATED, saved);
     }
@@ -342,6 +453,90 @@ export class OrdersService {
     });
   }
 
+  async findApprovedQrOrders(): Promise<Order[]> {
+    return this.orderRepo.find({
+      where: { status: OrderStatus.APPROVED, orderType: OrderType.QR },
+      order: { createdAt: 'ASC' },
+      take: 100,
+    });
+  }
+
+  async findActiveQrForTable(tableId: string): Promise<Order | null> {
+    return this.orderRepo.findOne({
+      where: {
+        tableId,
+        orderType: OrderType.QR,
+        status: In([
+          OrderStatus.APPROVAL_PENDING,
+          OrderStatus.APPROVED,
+          OrderStatus.COOKING,
+          OrderStatus.READY,
+        ]),
+      },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  private async resolveQrSessionId(tableId: string, currentOrderId?: string): Promise<string | undefined> {
+    if (currentOrderId) {
+      const currentOrder = await this.orderRepo.findOne({
+        where: { id: currentOrderId, tableId },
+        select: ['id', 'orderType', 'sessionId'],
+      });
+      if (currentOrder?.orderType === OrderType.QR) {
+        return currentOrder.sessionId ?? currentOrder.id;
+      }
+      if (!currentOrder) return currentOrderId;
+    }
+
+    const activeOrder = await this.findActiveQrForTable(tableId);
+    return activeOrder?.sessionId ?? activeOrder?.id;
+  }
+
+  async findQrSessionForTable(tableId: string): Promise<{ sessionId: string; orders: Order[] } | null> {
+    const table = await this.tablesService.findOne(tableId);
+    const sessionId = await this.resolveQrSessionId(tableId, table.currentOrderId);
+    if (!sessionId) return null;
+
+    const orders = await this.orderRepo
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.items', 'item')
+      .where('order.tableId = :tableId', { tableId })
+      .andWhere('order.orderType = :orderType', { orderType: OrderType.QR })
+      .andWhere('(order.id = :sessionId OR order.sessionId = :sessionId)', { sessionId })
+      .orderBy('order.createdAt', 'ASC')
+      .addOrderBy('item.createdAt', 'ASC')
+      .getMany();
+
+    if (orders.length === 0) return null;
+    return { sessionId, orders };
+  }
+
+  private getTableSessionId(order: Pick<Order, 'id' | 'tableId' | 'sessionId'>): string | undefined {
+    return order.tableId ? order.sessionId ?? order.id : undefined;
+  }
+
+  private async closeTableSessionIfSettled(order: Order): Promise<void> {
+    if (!order.tableId) return;
+    const sessionId = this.getTableSessionId(order);
+    if (!sessionId) return;
+
+    const sessionOrders = await this.orderRepo
+      .createQueryBuilder('order')
+      .where('order.tableId = :tableId', { tableId: order.tableId })
+      .andWhere('(order.id = :sessionId OR order.sessionId = :sessionId)', { sessionId })
+      .getMany();
+    const hasOpenOrders = sessionOrders.some(
+      (sessionOrder) => ![OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(sessionOrder.status),
+    );
+    if (hasOpenOrders) return;
+
+    const table = await this.tablesService.findOne(order.tableId);
+    if (table.currentOrderId === sessionId) {
+      await this.tablesService.setFree(order.tableId);
+    }
+  }
+
   async findActive(): Promise<Order[]> {
     const orders = await this.orderRepo.find({
       where: [
@@ -353,6 +548,43 @@ export class OrdersService {
       ],
       order: { createdAt: 'DESC' },
     });
+
+    // Bring existing QR bills approved before beverage-ready tracking online
+    // into the same state as newly approved bills.
+    for (const order of orders) {
+      if (
+        order.status === OrderStatus.APPROVAL_PENDING ||
+        [OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(order.status)
+      ) {
+        continue;
+      }
+
+      for (const item of order.items ?? []) {
+        if (
+          item.status === OrderItemStatus.PENDING &&
+          (item.beverageId || item.routingDestination === 'BILLING')
+        ) {
+          const updatedItem = await this.updateItemStatus(item.id, OrderItemStatus.READY);
+          item.status = updatedItem.status;
+        }
+      }
+
+      const kitchenItems = (order.items ?? []).filter(
+        (item) =>
+          !item.beverageId &&
+          item.routingDestination !== 'BILLING' &&
+          ![OrderItemStatus.REJECTED, OrderItemStatus.REMOVED].includes(item.status),
+      );
+      if (
+        order.status === OrderStatus.COOKING &&
+        kitchenItems.length > 0 &&
+        kitchenItems.every((item) => item.status === OrderItemStatus.SERVED)
+      ) {
+        const readyOrder = await this.updateOrderStatus(order.id, OrderStatus.READY);
+        order.status = readyOrder.status;
+      }
+    }
+
     return this.populateTableNumbers(orders);
   }
 
@@ -367,6 +599,7 @@ export class OrdersService {
       [OrderStatus.CANCELLED]: SocketEvent.ORDER_CANCELLED,
       [OrderStatus.COMPLETED]: SocketEvent.ORDER_COMPLETED,
       [OrderStatus.COOKING]: SocketEvent.ORDER_FIRED,
+      [OrderStatus.READY]: SocketEvent.ORDER_UPDATED,
     };
     const event = eventMap[status];
     if (event) {
@@ -374,6 +607,11 @@ export class OrdersService {
       this.eventsService.emitToOrder(id, event, saved);
       this.eventsService.emitToRoom('approval:hub', event, saved);
       this.eventsService.emitToRoom('pos:all', event, saved);
+      const sessionId = this.getTableSessionId(saved);
+      if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, event, saved);
+    }
+    if (status === OrderStatus.CANCELLED) {
+      await this.closeTableSessionIfSettled(saved);
     }
     return saved;
   }
@@ -381,6 +619,27 @@ export class OrdersService {
   async updateItemStatus(itemId: string, status: OrderItemStatus): Promise<OrderItem> {
     const item = await this.itemRepo.findOne({ where: { id: itemId } });
     if (!item) throw new NotFoundException('Order item not found');
+    const parentOrder = await this.orderRepo.findOne({ where: { id: item.orderId } });
+    if (!parentOrder) throw new NotFoundException('Order not found');
+    if ([OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(parentOrder.status)) {
+      throw new BadRequestException('Items on completed or cancelled orders cannot be changed');
+    }
+
+    const allowedTransitions: Partial<Record<OrderItemStatus, OrderItemStatus[]>> = {
+      [OrderItemStatus.PENDING]: [OrderItemStatus.QUEUED, OrderItemStatus.READY],
+      [OrderItemStatus.QUEUED]: [OrderItemStatus.COOKING],
+      [OrderItemStatus.COOKING]: [OrderItemStatus.READY],
+      [OrderItemStatus.READY]: [OrderItemStatus.SERVED],
+    };
+    if (!allowedTransitions[item.status]?.includes(status)) {
+      throw new BadRequestException(`Item cannot move from ${item.status} to ${status}`);
+    }
+    if (
+      parentOrder.status === OrderStatus.APPROVAL_PENDING &&
+      item.approvalStatus !== OrderItemApprovalStatus.APPROVED
+    ) {
+      throw new BadRequestException('Items awaiting approval cannot enter preparation or billing');
+    }
     item.status = status;
     if (status === OrderItemStatus.COOKING) item.cookingStartedAt = new Date();
     if (status === OrderItemStatus.READY) item.readyAt = new Date();
@@ -394,10 +653,16 @@ export class OrdersService {
     };
     const itemEvent = itemEventMap[status];
     if (itemEvent) {
-      const payload = { ...saved, orderId: item.orderId };
+      const parentOrder = await this.orderRepo.findOne({
+        where: { id: item.orderId },
+        select: ['id', 'tableId', 'sessionId'],
+      });
+      const sessionId = parentOrder && this.getTableSessionId(parentOrder);
+      const payload = { ...saved, orderId: item.orderId, sessionId };
       this.eventsService.emit(itemEvent, payload);
       this.eventsService.emitToOrder(item.orderId, itemEvent, payload);
       this.eventsService.emitToRoom('pos:all', itemEvent, payload);
+      if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, itemEvent, payload);
       if (item.kitchenStation) {
         this.eventsService.emitToStation(item.kitchenStation, itemEvent, payload);
       }
@@ -405,16 +670,218 @@ export class OrdersService {
     return saved;
   }
 
+  notifyOrderUpdated(order: Order): void {
+    this.eventsService.emit(SocketEvent.ORDER_UPDATED, order);
+    this.eventsService.emitToOrder(order.id, SocketEvent.ORDER_UPDATED, order);
+    this.eventsService.emitToRoom('approval:hub', SocketEvent.ORDER_UPDATED, order);
+    this.eventsService.emitToRoom('pos:all', SocketEvent.ORDER_UPDATED, order);
+    const sessionId = this.getTableSessionId(order);
+    if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, SocketEvent.ORDER_UPDATED, order);
+  }
+
+  async editPendingApprovalItem(
+    orderId: string,
+    itemId: string,
+    dto: UpdateApprovalItemDto,
+  ): Promise<{ before: Partial<OrderItem>; item: OrderItem; order: Order }> {
+    const order = await this.findOne(orderId);
+    if (order.status !== OrderStatus.APPROVAL_PENDING || order.settlementStatus === SettlementStatus.PAID) {
+      throw new BadRequestException('Only unpaid orders awaiting approval can be edited; use the authorized cancel/refund workflow for fired or paid orders');
+    }
+
+    const item = order.items.find((candidate) => candidate.id === itemId);
+    if (!item) throw new NotFoundException('Order item not found');
+    if (
+      (item.approvalStatus ?? OrderItemApprovalStatus.PENDING) !== OrderItemApprovalStatus.PENDING ||
+      item.status !== OrderItemStatus.PENDING
+    ) {
+      throw new BadRequestException('Only pending, unfired items can be edited');
+    }
+    const isBeverage = !!item.beverageId || item.routingDestination === 'BILLING';
+    if (dto.category !== (isBeverage ? 'BEVERAGE' : 'FOOD')) {
+      throw new BadRequestException('Item category cannot be changed because it determines inventory and routing');
+    }
+    if (!dto.menuItemName.trim() || !Number.isInteger(dto.quantity) || dto.quantity < 1) {
+      throw new BadRequestException('Item name and a positive whole-number quantity are required');
+    }
+    if (!Number.isFinite(dto.unitPrice) || dto.unitPrice < 0) {
+      throw new BadRequestException('Price must be a non-negative number');
+    }
+
+    const before = this.snapshotApprovalItem(item);
+    const previousQuantity = item.quantity;
+    item.menuItemName = dto.menuItemName.trim();
+    item.quantity = dto.quantity;
+    item.unitPrice = Number(dto.unitPrice);
+    item.notes = dto.notes?.trim() || null;
+
+    if (isBeverage) {
+      const bottleOrderFlag = dto.bottleOrderFlag ?? item.bottleOrderFlag;
+      const size = bottleOrderFlag ? Number(dto.bottleSizeMl ?? item.bottleSizeMl) : undefined;
+      if (bottleOrderFlag && ![180, 375, 750].includes(size)) {
+        throw new BadRequestException('Beverage bottle size must be 180ml, 375ml, or 750ml');
+      }
+      if (!bottleOrderFlag && !['30ML', '60ML', '90ML'].includes(String(dto.servingSize ?? item.servingSize).toUpperCase())) {
+        throw new BadRequestException('Beverage serving size must be 30ML, 60ML, 90ML, or a bottle size');
+      }
+      item.bottleOrderFlag = bottleOrderFlag;
+      item.bottleSizeMl = size;
+      item.servingSize = bottleOrderFlag
+        ? 'BOTTLE'
+        : String(dto.servingSize ?? item.servingSize).toUpperCase();
+    }
+
+    for (const addon of item.addOns ?? []) {
+      addon.quantity = Math.round((Number(addon.quantity) / previousQuantity) * item.quantity);
+      addon.lineTotal = Number((Number(addon.unitPrice) * addon.quantity).toFixed(2));
+    }
+    item.addonTotal = Number((item.addOns ?? []).reduce((total, addon) => total + Number(addon.lineTotal), 0).toFixed(2));
+    item.lineTotal = Number((item.unitPrice * item.quantity + item.addonTotal).toFixed(2));
+    const savedItem = await this.itemRepo.save(item);
+    const updatedOrder = await this.recalculateOrderTotals(orderId);
+    return { before, item: savedItem, order: updatedOrder };
+  }
+
+  snapshotApprovalItem(item: OrderItem): Partial<OrderItem> {
+    return {
+      id: item.id,
+      menuItemId: item.menuItemId,
+      menuItemName: item.menuItemName,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      lineTotal: item.lineTotal,
+      addonTotal: item.addonTotal,
+      notes: item.notes,
+      beverageId: item.beverageId,
+      bottleSizeMl: item.bottleSizeMl,
+      servingSize: item.servingSize,
+      bottleOrderFlag: item.bottleOrderFlag,
+      status: item.status,
+      approvalStatus: item.approvalStatus,
+      addOns: item.addOns,
+    };
+  }
+
+  async setItemApprovalStatus(
+    orderId: string,
+    itemId: string,
+    approvalStatus: OrderItemApprovalStatus,
+    reason?: string,
+  ): Promise<{ before: Partial<OrderItem>; item: OrderItem; order: Order }> {
+    const order = await this.findOne(orderId);
+    if (order.status !== OrderStatus.APPROVAL_PENDING || order.settlementStatus === SettlementStatus.PAID) {
+      throw new BadRequestException('Only pending items can be changed; use the authorized cancel/refund workflow for fired or paid orders');
+    }
+    const item = order.items.find((candidate) => candidate.id === itemId);
+    if (!item) throw new NotFoundException('Order item not found');
+    if (
+      (item.approvalStatus ?? OrderItemApprovalStatus.PENDING) !== OrderItemApprovalStatus.PENDING ||
+      item.status !== OrderItemStatus.PENDING
+    ) {
+      throw new BadRequestException('Item has already been approved, rejected, removed, or fired');
+    }
+
+    const before = this.snapshotApprovalItem(item);
+    const update: Partial<OrderItem> = { approvalStatus };
+    if (approvalStatus === OrderItemApprovalStatus.REJECTED) {
+      update.status = OrderItemStatus.REJECTED;
+      update.rejectionReason = reason;
+    } else if (approvalStatus === OrderItemApprovalStatus.REMOVED) {
+      update.status = OrderItemStatus.REMOVED;
+      update.rejectionReason = reason;
+    }
+    const claim = await this.itemRepo.update(
+      [
+        {
+          id: itemId,
+          orderId,
+          status: OrderItemStatus.PENDING,
+          approvalStatus: OrderItemApprovalStatus.PENDING,
+        },
+        {
+          id: itemId,
+          orderId,
+          status: OrderItemStatus.PENDING,
+          approvalStatus: IsNull(),
+        },
+      ],
+      update,
+    );
+    if (claim.affected !== 1) {
+      throw new BadRequestException('Item has already been approved, rejected, removed, or fired');
+    }
+    const savedItem = await this.itemRepo.findOne({ where: { id: itemId, orderId } });
+    if (!savedItem) throw new NotFoundException('Order item not found');
+    const updatedOrder = [OrderItemApprovalStatus.REJECTED, OrderItemApprovalStatus.REMOVED].includes(approvalStatus)
+      ? await this.recalculateOrderTotals(orderId)
+      : await this.findOne(orderId);
+    return { before, item: savedItem, order: updatedOrder };
+  }
+
+  async resetItemToPendingApproval(orderId: string, itemId: string): Promise<void> {
+    const item = await this.itemRepo.findOne({ where: { id: itemId, orderId } });
+    if (!item || item.status !== OrderItemStatus.PENDING) return;
+    item.approvalStatus = OrderItemApprovalStatus.PENDING;
+    await this.itemRepo.save(item);
+  }
+
+  async recalculateOrderTotals(orderId: string): Promise<Order> {
+    const order = await this.findOne(orderId);
+    const billableItems = (order.items ?? []).filter(
+      (item) =>
+        ![OrderItemStatus.REJECTED, OrderItemStatus.REMOVED].includes(item.status) &&
+        ![OrderItemApprovalStatus.REJECTED, OrderItemApprovalStatus.REMOVED].includes(item.approvalStatus),
+    );
+
+    let subtotal = 0;
+    let taxAmount = 0;
+    for (const item of billableItems) {
+      subtotal += Number(item.lineTotal) || 0;
+      if (!item.beverageId) {
+        const menuItem = await this.menuService.findItem(item.menuItemId);
+        taxAmount += Number((Number(item.lineTotal) * Number(menuItem.taxPercent) / 100).toFixed(2));
+      }
+    }
+
+    order.subtotal = Number(subtotal.toFixed(2));
+    order.taxAmount = Number(taxAmount.toFixed(2));
+    order.grossAmount = Number((order.subtotal + order.taxAmount).toFixed(2));
+    if (order.discountType === 'PERCENT' && order.discountValue != null) {
+      order.discountAmount = Number((order.grossAmount * Number(order.discountValue) / 100).toFixed(2));
+    } else if (order.discountType === 'FLAT' && order.discountValue != null) {
+      order.discountAmount = Math.min(order.grossAmount, Number(order.discountValue));
+    } else {
+      order.discountAmount = Math.min(Number(order.discountAmount) || 0, order.grossAmount);
+    }
+    order.totalAmount = Number((order.grossAmount - (order.discountAmount ?? 0)).toFixed(2));
+    const saved = await this.orderRepo.save(order);
+    this.eventsService.emit(SocketEvent.ORDER_UPDATED, saved);
+    this.eventsService.emitToOrder(saved.id, SocketEvent.ORDER_UPDATED, saved);
+    this.eventsService.emitToRoom('pos:all', SocketEvent.ORDER_UPDATED, saved);
+    this.eventsService.emitToRoom('approval:hub', SocketEvent.ORDER_UPDATED, saved);
+    const sessionId = this.getTableSessionId(saved);
+    if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, SocketEvent.ORDER_UPDATED, saved);
+    return saved;
+  }
+
   async deleteItem(itemId: string): Promise<Order> {
     const item = await this.itemRepo.findOne({ where: { id: itemId } });
     if (!item) throw new NotFoundException('Order item not found');
-    if (![OrderItemStatus.PENDING, OrderItemStatus.QUEUED].includes(item.status)) {
-      throw new BadRequestException('Item cannot be deleted after cooking has started');
-    }
-
     const order = await this.findOne(item.orderId);
-    const menuItem = await this.menuService.findItem(item.menuItemId);
-    const lineTax = item.lineTotal * (menuItem.taxPercent / 100);
+    if (
+      order.status !== OrderStatus.CREATED ||
+      order.settlementStatus === SettlementStatus.PAID ||
+      item.status !== OrderItemStatus.PENDING
+    ) {
+      throw new BadRequestException('Only unfired items on active POS orders can be deleted; use the authorized order cancel/refund workflow for fired or paid orders');
+    }
+    let lineTax = 0;
+    if (item.beverageId) {
+      await this.beveragesService.restoreForOrderItem(item.id, 'CANCELLATION_RESTORE');
+    } else {
+      const menuItem = await this.menuService.findItem(item.menuItemId);
+      lineTax = item.lineTotal * (menuItem.taxPercent / 100);
+    }
 
     const batchItems = await this.batchItemRepo.find({ where: { orderItemId: itemId } });
     if (batchItems.length > 0) {
@@ -447,6 +914,8 @@ export class OrdersService {
     this.eventsService.emit(SocketEvent.ORDER_UPDATED, saved);
     this.eventsService.emitToOrder(saved.id, SocketEvent.ORDER_UPDATED, saved);
     this.eventsService.emitToRoom('pos:all', SocketEvent.ORDER_UPDATED, saved);
+    const sessionId = this.getTableSessionId(saved);
+    if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, SocketEvent.ORDER_UPDATED, saved);
 
     return saved;
   }
@@ -455,6 +924,16 @@ export class OrdersService {
     const order = await this.findOne(id);
     if (order.status === OrderStatus.COMPLETED || order.settlementStatus === SettlementStatus.PAID) {
       throw new BadRequestException('Order is already completed');
+    }
+    if (
+      order.status === OrderStatus.APPROVAL_PENDING &&
+      order.items.some(
+        (item) =>
+          item.status === OrderItemStatus.PENDING &&
+          (item.approvalStatus ?? OrderItemApprovalStatus.PENDING) === OrderItemApprovalStatus.PENDING,
+      )
+    ) {
+      throw new BadRequestException('All order items must be approved, rejected, or removed before payment');
     }
 
     const grossAmount = Number((order.subtotal + order.taxAmount).toFixed(2));
@@ -478,16 +957,50 @@ export class OrdersService {
     }
 
     order.totalAmount = Number((order.grossAmount - (order.discountAmount ?? 0)).toFixed(2));
+
+    // Beverage stock is finalized only after successful payment/billing.
+    // The deduction method is idempotent and never blocks or creates negative stock.
+    for (const item of order.items ?? []) {
+      if (
+        item.beverageId &&
+        ![OrderItemStatus.REJECTED, OrderItemStatus.REMOVED].includes(item.status) &&
+        ![OrderItemApprovalStatus.REJECTED, OrderItemApprovalStatus.REMOVED].includes(item.approvalStatus)
+      ) {
+        await this.beveragesService.deductForOrder(
+          item.id,
+          item.beverageId,
+          item.servingSize,
+          item.bottleOrderFlag,
+          item.quantity,
+          item.bottleSizeMl,
+        );
+      }
+    }
+
+    // A successful bill settlement closes billing-only beverage lines as served,
+    // including older orders whose beverage items were still marked pending.
+    for (const item of order.items ?? []) {
+      if (
+        item.status !== OrderItemStatus.SERVED &&
+        ![OrderItemStatus.REJECTED, OrderItemStatus.REMOVED].includes(item.status) &&
+        (item.beverageId || item.routingDestination === 'BILLING')
+      ) {
+        await this.updateItemStatus(item.id, OrderItemStatus.SERVED);
+      }
+    }
+
     order.status = OrderStatus.COMPLETED;
     order.settlementStatus = SettlementStatus.PAID;
     order.paymentMethod = paymentMethod ?? PaymentMethod.CASH;
     order.settledAt = new Date();
     order.completedAt = new Date();
     const saved = await this.orderRepo.save(order);
-    if (order.tableId) await this.tablesService.setFree(order.tableId);
+    await this.closeTableSessionIfSettled(saved);
     this.eventsService.emit(SocketEvent.ORDER_COMPLETED, saved);
     this.eventsService.emitToOrder(id, SocketEvent.ORDER_COMPLETED, saved);
     this.eventsService.emitToRoom('pos:all', SocketEvent.ORDER_COMPLETED, saved);
+    const sessionId = this.getTableSessionId(saved);
+    if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, SocketEvent.ORDER_COMPLETED, saved);
     return saved;
   }
 
@@ -505,6 +1018,8 @@ export class OrdersService {
     this.eventsService.emit(SocketEvent.ORDER_UPDATED, saved);
     this.eventsService.emitToOrder(id, SocketEvent.ORDER_UPDATED, saved);
     this.eventsService.emitToRoom('pos:all', SocketEvent.ORDER_UPDATED, saved);
+    const sessionId = this.getTableSessionId(saved);
+    if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, SocketEvent.ORDER_UPDATED, saved);
 
     return saved;
   }
@@ -514,21 +1029,29 @@ export class OrdersService {
     if ([OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(order.status)) {
       throw new BadRequestException('Cannot cancel a completed or already cancelled order');
     }
+    for (const item of order.items ?? []) {
+      if (item.beverageId) await this.beveragesService.restoreForOrderItem(item.id, 'CANCELLATION_RESTORE');
+    }
     order.status = OrderStatus.CANCELLED;
     order.settlementStatus = SettlementStatus.CANCELLED;
     order.rejectionReason = reason;
     const saved = await this.orderRepo.save(order);
-    if (order.tableId) await this.tablesService.setFree(order.tableId);
+    await this.closeTableSessionIfSettled(saved);
     this.eventsService.emit(SocketEvent.ORDER_CANCELLED, saved);
     this.eventsService.emitToOrder(id, SocketEvent.ORDER_CANCELLED, saved);
     this.eventsService.emitToRoom('approval:hub', SocketEvent.ORDER_CANCELLED, saved);
+    const sessionId = this.getTableSessionId(saved);
+    if (sessionId) this.eventsService.emitToRoom(`session:${sessionId}`, SocketEvent.ORDER_CANCELLED, saved);
     return saved;
   }
 
   async getOrderSummary(orderId: string) {
     const order = await this.findOne(orderId);
-    const allServed = order.items.every((i) => i.status === OrderItemStatus.SERVED);
-    const anyReady = order.items.some((i) => i.status === OrderItemStatus.READY);
+    const activeItems = order.items.filter(
+      (item) => ![OrderItemStatus.REJECTED, OrderItemStatus.REMOVED].includes(item.status),
+    );
+    const allServed = activeItems.length > 0 && activeItems.every((i) => i.status === OrderItemStatus.SERVED);
+    const anyReady = activeItems.some((i) => i.status === OrderItemStatus.READY);
     return { order, allServed, anyReady };
   }
 

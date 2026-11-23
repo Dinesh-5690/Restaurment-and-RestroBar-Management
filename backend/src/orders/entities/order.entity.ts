@@ -5,10 +5,12 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  Index,
 } from 'typeorm';
 import { OrderType, OrderStatus, PaymentMethod, SettlementStatus } from '../../common/enums';
 import { OrderItem } from './order-item.entity';
 
+@Index('IDX_orders_table_session', ['tableId', 'sessionId'])
 @Entity('orders')
 export class Order {
   @PrimaryGeneratedColumn('uuid')
@@ -22,6 +24,12 @@ export class Order {
 
   @Column({ nullable: true })
   tableId: string;
+
+  @Column({ nullable: true })
+  sessionId: string;
+
+  @Column({ type: 'varchar', nullable: true, unique: true })
+  clientRequestId: string;
 
   @Column({ type: 'varchar', nullable: true })
   tableNumber: string;
@@ -91,6 +99,9 @@ export class Order {
 
   @Column({ nullable: true })
   approvedAt: Date;
+
+  @Column({ nullable: true })
+  routingDestination: string;
 
   @Column({ nullable: true })
   completedAt: Date;

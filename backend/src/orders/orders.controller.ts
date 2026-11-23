@@ -16,11 +16,27 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole, OrderItemStatus, PaymentMethod, SettlementStatus, OrderType } from '../common/enums';
-import { IsString, IsOptional, IsEnum, IsArray, ValidateNested } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsArray, ValidateNested, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 
+// All roles that could already use these JWT-protected read APIs retain access.
+const ORDER_READ_ROLES = [
+  UserRole.ADMIN,
+  UserRole.MANAGER,
+  UserRole.CASHIER,
+  UserRole.WAITER,
+  UserRole.KITCHEN,
+  UserRole.BEVERAGE_MANAGER,
+];
+
 class UpdateItemStatusDto {
-  @IsEnum(OrderItemStatus)
+  @IsIn([
+    OrderItemStatus.PENDING,
+    OrderItemStatus.QUEUED,
+    OrderItemStatus.COOKING,
+    OrderItemStatus.READY,
+    OrderItemStatus.SERVED,
+  ])
   status: OrderItemStatus;
 }
 
@@ -78,19 +94,22 @@ export class OrdersController {
   }
 
   @Get('active')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(...ORDER_READ_ROLES)
   findActive() {
     return this.ordersService.findActive();
   }
 
   @Get('active-by-table')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(...ORDER_READ_ROLES)
   findActiveByTable() {
     return this.ordersService.findActiveByTable();
   }
 
   @Get('transactions')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(...ORDER_READ_ROLES)
   transactions(
     @Query('from') from?: string,
     @Query('to') to?: string,
@@ -120,7 +139,8 @@ export class OrdersController {
   }
 
   @Get(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(...ORDER_READ_ROLES)
   findOne(@Param('id') id: string) {
     return this.ordersService.findOne(id);
   }
@@ -147,13 +167,15 @@ export class OrdersController {
   }
 
   @Patch('items/:itemId/status')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.KITCHEN)
   updateItemStatus(@Param('itemId') itemId: string, @Body() dto: UpdateItemStatusDto) {
     return this.ordersService.updateItemStatus(itemId, dto.status);
   }
 
   @Delete('items/:itemId')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, UserRole.WAITER)
   deleteItem(@Param('itemId') itemId: string) {
     return this.ordersService.deleteItem(itemId);
   }

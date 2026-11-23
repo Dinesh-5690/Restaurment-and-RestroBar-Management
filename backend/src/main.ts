@@ -1,10 +1,11 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { json, urlencoded } from 'express';
-import { AppModule } from './app.module';
 import { UsersService } from './users/users.service';
 
 async function bootstrap() {
+  require('dotenv').config();
+  const { AppModule } = await import('./app.module');
   const app = await NestFactory.create(AppModule);
 
   // Allow larger payloads for printer settings (e.g., base64 logo uploads)
@@ -47,7 +48,7 @@ async function bootstrap() {
   try {
     const usersService = app.get(UsersService);
     await usersService.seedAdmin();
-    console.log('✅ Admin user seeded (username: admin / password: admin123)');
+    console.log('✅ Admin account initialized');
   } catch (e) {
     console.error('Seed error:', e.message);
   }

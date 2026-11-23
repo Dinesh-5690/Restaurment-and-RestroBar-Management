@@ -13,7 +13,9 @@ interface Props {
 }
 
 export default function BatchFireModal({ order, onClose, onFired }: Props) {
-  const pendingItems = order.items.filter((i) => i.status === 'PENDING');
+  const pendingItems = order.items.filter((i) =>
+    i.status === 'PENDING' && !i.beverageId && i.routingDestination !== 'BILLING'
+  );
   const [selected, setSelected] = useState<Set<string>>(
     new Set(pendingItems.map((i) => i.id)),
   );

@@ -35,6 +35,8 @@ const STATUS_COLOR: Record<string, string> = {
   CANCELLED: 'bg-red-100 text-red-600',
 };
 
+const MAX_MERGE_BILLS = 5;
+
 export default function TablesPage() {
   const [tables, setTables] = useState<Table[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -87,8 +89,8 @@ export default function TablesPage() {
     return () => window.removeEventListener('focus', handleFocus);
   }, [load]);
 
-  const canDeleteItem = (item: OrderItem) =>
-    item.status === 'PENDING' || item.status === 'QUEUED';
+  const canDeleteItem = (order: Order, item: OrderItem) =>
+    order.status === 'CREATED' && item.status === 'PENDING';
 
   useSocket({
     ORDER_CREATED: () => load(),
@@ -123,7 +125,10 @@ export default function TablesPage() {
     }
 
     if (mergeBillsMode) {
-      setMergeBillPickerTable({ table, orders: tableOrders });
+      setMergeBillPickerTable({
+        table,
+        orders: tableOrders.filter((order) => order.orderType === 'DINE_IN'),
+      });
       return;
     }
 
@@ -136,9 +141,19 @@ export default function TablesPage() {
     setMergeBillPickerTable(null);
   };
 
+  const toggleMergeBill = (orderId: string) => {
+    if (!mergeBillsSelected.includes(orderId) && mergeBillsSelected.length >= MAX_MERGE_BILLS) {
+      toast.error(`You can merge up to ${MAX_MERGE_BILLS} bills at a time`);
+      return;
+    }
+    setMergeBillsSelected((prev) =>
+      prev.includes(orderId) ? prev.filter((id) => id !== orderId) : [...prev, orderId],
+    );
+  };
+
   const confirmMerge = async () => {
-    if (mergeBillsSelected.length < 2) {
-      toast.error('Select at least 2 bills to merge');
+    if (mergeBillsSelected.length < 2 || mergeBillsSelected.length > MAX_MERGE_BILLS) {
+      toast.error(`Select 2 to ${MAX_MERGE_BILLS} bills to merge`);
       return;
     }
 
@@ -150,16 +165,27 @@ export default function TablesPage() {
     }
 
     setMergingBills(true);
+    let mergedCount = 0;
     try {
-      for (const sourceOrderId of sourceOrderIds) {
-        await ordersApi.merge(sourceOrderId, destinationOrderId);
+      try {
+        for (const sourceOrderId of sourceOrderIds) {
+          await ordersApi.merge(sourceOrderId, destinationOrderId);
+          mergedCount += 1;
+        }
+      } catch (err: any) {
+        cancelMergeMode();
+        load().catch(() => toast.error('Active bills could not be refreshed.'));
+        if (mergedCount > 0) {
+          toast.error('The merge did not finish. Review the refreshed active bills before retrying.');
+          return;
+        }
+        toast.error(err.response?.data?.message || 'Failed to merge bills');
+        return;
       }
 
       toast.success('Bills merged successfully');
       cancelMergeMode();
-      await load();
-    } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Failed to merge bills');
+      load().catch(() => toast.error('Bills merged, but active orders could not be refreshed.'));
     } finally {
       setMergingBills(false);
     }
@@ -324,7 +350,7 @@ export default function TablesPage() {
           ) : mergeBillsMode ? (
             <div className="flex items-center gap-2">
               <span className="text-sm text-purple-700 font-medium">
-                {mergeBillsSelected.length} bill{mergeBillsSelected.length !== 1 ? 's' : ''} selected
+                {mergeBillsSelected.length}/{MAX_MERGE_BILLS} bills selected
               </span>
               <button
                 onClick={cancelMergeMode}
@@ -355,7 +381,7 @@ export default function TablesPage() {
 
       {mergeBillsMode && (
         <div className="bg-purple-50 border-b border-purple-100 px-6 py-2 text-center text-sm text-purple-700">
-          Click any occupied table to pick bills. Select from multiple tables, then confirm merge.
+          Select 2 to {MAX_MERGE_BILLS} dine-in bills across tables. Combine QR bills at POS checkout to preserve order history.
         </div>
       )}
 
@@ -582,23 +608,24 @@ export default function TablesPage() {
             <div className="px-5 py-4 border-b flex items-center justify-between">
               <div>
                 <h3 className="font-bold text-gray-900">Table {mergeBillPickerTable.table.tableNumber} — Pick Bills</h3>
-                <p className="text-xs text-gray-500">Tap a bill to toggle selection for merge</p>
+                <p className="text-xs text-gray-500">Select 2 to {MAX_MERGE_BILLS} bills; the last selected bill is the destination</p>
               </div>
               <button onClick={() => setMergeBillPickerTable(null)} className="p-2 rounded-lg hover:bg-gray-100">
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="p-5 space-y-2 overflow-y-auto max-h-[60vh]">
+              {mergeBillPickerTable.orders.length === 0 && (
+                <p className="py-8 text-center text-sm text-gray-500">
+                  No dine-in bills are available here. Combine QR bills at POS checkout to preserve their order history.
+                </p>
+              )}
               {mergeBillPickerTable.orders.map((order) => {
                 const isSelected = mergeBillsSelected.includes(order.id);
                 return (
                   <div
                     key={order.id}
-                    onClick={() =>
-                      setMergeBillsSelected((prev) =>
-                        isSelected ? prev.filter((id) => id !== order.id) : [...prev, order.id],
-                      )
-                    }
+                    onClick={() => toggleMergeBill(order.id)}
                     className={clsx(
                       'rounded-xl border p-4 cursor-pointer transition-all flex items-center justify-between gap-3',
                       isSelected
@@ -625,17 +652,17 @@ export default function TablesPage() {
               })}
             </div>
             <div className="px-5 py-3 border-t bg-gray-50 text-xs text-gray-500 text-center">
-              {mergeBillsSelected.length} bill{mergeBillsSelected.length !== 1 ? 's' : ''} selected across all tables · Close to continue picking from other tables
+              {mergeBillsSelected.length}/{MAX_MERGE_BILLS} bills selected across all tables · Close to continue picking from other tables
             </div>
           </div>
         </div>
       )}
 
       {/* Floating confirm merge bar */}
-      {mergeBillsMode && mergeBillsSelected.length >= 2 && (
+      {mergeBillsMode && mergeBillsSelected.length >= 2 && mergeBillsSelected.length <= MAX_MERGE_BILLS && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[70] flex items-center gap-4 bg-purple-700 text-white px-6 py-3 rounded-2xl shadow-xl">
           <span className="text-sm font-semibold">
-            {mergeBillsSelected.length} bills selected ·{' '}
+            {mergeBillsSelected.length}/{MAX_MERGE_BILLS} bills selected ·{' '}
             ₹{orders.filter((o) => mergeBillsSelected.includes(o.id)).reduce((s, o) => s + Number(o.totalAmount), 0).toFixed(2)} ·
             Dest: {(() => {
               const destinationOrderId = mergeBillsSelected[mergeBillsSelected.length - 1];
@@ -646,7 +673,7 @@ export default function TablesPage() {
           </span>
           <button
             onClick={confirmMerge}
-            disabled={mergingBills}
+            disabled={mergingBills || mergeBillsSelected.length < 2 || mergeBillsSelected.length > MAX_MERGE_BILLS}
             className="bg-white text-purple-700 font-bold text-sm px-4 py-1.5 rounded-xl hover:bg-purple-50 disabled:opacity-60"
           >
             {mergingBills ? 'Merging...' : 'Merge Bills'}
@@ -700,7 +727,7 @@ export default function TablesPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      {canDeleteItem(item) && (
+                      {canDeleteItem(orderInfoModal.order, item) && (
                         <button
                           onClick={() => deleteOrderItem(item.id)}
                           className="text-red-600 text-xs font-semibold hover:text-red-800"

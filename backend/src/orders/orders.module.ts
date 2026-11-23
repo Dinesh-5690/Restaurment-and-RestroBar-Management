@@ -11,6 +11,7 @@ import { OrdersController } from './orders.controller';
 import { MenuModule } from '../menu/menu.module';
 import { TablesModule } from '../tables/tables.module';
 import { EventsModule } from '../events/events.module';
+import { BeveragesModule } from '../beverages/beverages.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { EventsModule } from '../events/events.module';
     MenuModule,
     TablesModule,
     EventsModule,
+    BeveragesModule,
   ],
   providers: [OrdersService],
   controllers: [OrdersController],

@@ -73,9 +73,22 @@ export class UsersService {
   }
 
   async seedAdmin(): Promise<void> {
-    const exists = await this.userRepo.findOne({ where: { username: 'admin' } });
+    const username = process.env.INITIAL_ADMIN_USERNAME || 'admin';
+    const password = process.env.INITIAL_ADMIN_PASSWORD || 'admin123';
+    const exists = await this.userRepo.findOne({ where: { username } });
     if (!exists) {
-      await this.create({ username: 'admin', password: 'admin123', name: 'Administrator', role: 'ADMIN' as any });
+      await this.create({ username, password, name: 'Administrator', role: 'ADMIN' as any });
+      return;
+    }
+
+    // Replace the demo password once when promoting the seeded local admin into production.
+    if (process.env.NODE_ENV === 'production' && process.env.INITIAL_ADMIN_PASSWORD) {
+      const alreadyConfigured = await bcrypt.compare(password, exists.password);
+      const stillUsingDemoPassword = await bcrypt.compare('admin123', exists.password);
+      if (!alreadyConfigured && stillUsingDemoPassword) {
+        exists.password = await bcrypt.hash(password, 12);
+        await this.userRepo.save(exists);
+      }
     }
   }
 }

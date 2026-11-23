@@ -13,6 +13,8 @@ interface POSState {
   setSelectedOrderBillNo: (billNo: string | null) => void;
   setOrderType: (type: 'DINE_IN' | 'ONLINE' | 'QR') => void;
   addToCart: (item: MenuItem, addons?: SelectedAddon[]) => void;
+  addBeverageToCart: (item: { id: string; brand: string; productName: string; unitPrice: number; servingSize: string; bottleOrderFlag?: boolean }) => void;
+
   removeFromCart: (cartLineId: string) => void;
   updateQuantity: (cartLineId: string, quantity: number) => void;
   clearCart: () => void;
@@ -57,6 +59,20 @@ export const usePOSStore = create<POSState>((set, get) => ({
         },
       ],
     });
+  },
+
+  addBeverageToCart: (item) => {
+    const cartLineId = `${item.id}-${item.servingSize}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    set({ cart: [...get().cart, {
+      cartLineId,
+      menuItemId: item.id,
+      menuItemName: `${item.brand} ${item.productName}${item.bottleOrderFlag ? ' (Bottle)' : ` (${item.servingSize})`}`,
+      unitPrice: item.unitPrice,
+      quantity: 1,
+      beverageId: item.id,
+      servingSize: item.servingSize,
+      bottleOrderFlag: item.bottleOrderFlag,
+    }] });
   },
 
   removeFromCart: (cartLineId: string) => {

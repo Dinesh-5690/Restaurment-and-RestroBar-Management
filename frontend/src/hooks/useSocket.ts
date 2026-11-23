@@ -20,6 +20,7 @@ export function useSocket(
       rooms.forEach((room) => {
         if (room.startsWith('station:')) socket.emit('join:station', room.replace('station:', ''));
         else if (room.startsWith('order:')) socket.emit('join:order', room.replace('order:', ''));
+        else if (room.startsWith('session:')) socket.emit('join:session', room.replace('session:', ''));
         else if (room === 'approval:hub') socket.emit('join:approval');
         else if (room === 'pos:all') socket.emit('join:pos');
       });

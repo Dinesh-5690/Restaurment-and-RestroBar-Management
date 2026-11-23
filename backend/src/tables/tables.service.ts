@@ -81,6 +81,35 @@ export class TablesService {
     return this.tableRepo.save(table);
   }
 
+  async claimQrSession(id: string, sessionId: string, expectedCurrentOrderId?: string): Promise<string> {
+    const query = this.tableRepo
+      .createQueryBuilder()
+      .update(Table)
+      .set({
+        status: TableStatus.OCCUPIED,
+        currentOrderId: sessionId,
+      })
+      .where('id = :id', { id });
+
+    if (expectedCurrentOrderId) {
+      query.andWhere('currentOrderId = :expectedCurrentOrderId', { expectedCurrentOrderId });
+    } else {
+      query.andWhere('currentOrderId IS NULL');
+    }
+
+    const result = await query.execute();
+    if (result.affected) {
+      return sessionId;
+    }
+
+    const table = await this.findOne(id);
+    if (table.currentOrderId) {
+      return table.currentOrderId;
+    }
+
+    throw new BadRequestException('Unable to start a table session. Please try again.');
+  }
+
   async setFree(id: string): Promise<Table> {
     const table = await this.findOne(id);
     table.status = TableStatus.FREE;

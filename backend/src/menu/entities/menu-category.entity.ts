@@ -16,7 +16,7 @@ export class MenuCategory {
   name: string;
 
   @Column({ nullable: true })
-  kitchenStation: string; // e.g. GRILL, FRYER, TANDOOR, BAR, COLD
+  kitchenStation: string; // e.g. GRILL, FRYER, TANDOOR, COLD
 
   @Column({ default: 0 })
   sequence: number;

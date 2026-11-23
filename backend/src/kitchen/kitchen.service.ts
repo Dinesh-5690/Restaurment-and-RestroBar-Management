@@ -6,7 +6,7 @@ import { KitchenBatchItem } from './entities/kitchen-batch-item.entity';
 import { OrdersService } from '../orders/orders.service';
 import { EventsService } from '../events/events.service';
 import { FireItemsDto } from './dto/fire-items.dto';
-import { KitchenBatchStatus, OrderItemStatus, OrderStatus, SocketEvent } from '../common/enums';
+import { KitchenBatchStatus, OrderItemApprovalStatus, OrderItemStatus, OrderStatus, OrderType, SocketEvent } from '../common/enums';
 import { OrderItem } from '../orders/entities/order-item.entity';
 import { Table } from '../tables/entities/table.entity';
 
@@ -46,19 +46,37 @@ export class KitchenService {
     const order = await this.ordersService.findOne(dto.orderId);
     const resolvedTableNumber = await this.resolveTableNumber(order);
 
-    if (![OrderStatus.CREATED, OrderStatus.APPROVED, OrderStatus.COOKING].includes(order.status)) {
-      throw new BadRequestException('Order must be CREATED, APPROVED or COOKING to fire items');
+    if (![OrderStatus.CREATED, OrderStatus.APPROVAL_PENDING, OrderStatus.APPROVED, OrderStatus.COOKING, OrderStatus.READY].includes(order.status)) {
+      throw new BadRequestException('Order must be CREATED, APPROVED, COOKING or READY to fire items');
     }
+    const requiresItemApproval =
+      order.status === OrderStatus.APPROVAL_PENDING || order.orderType === OrderType.QR;
 
     // Validate all item IDs belong to the order
     const orderItemMap = new Map(order.items.map((i) => [i.id, i]));
+    if (!dto.orderItemIds?.length) {
+      throw new BadRequestException('Select at least one food item to fire');
+    }
+    if (new Set(dto.orderItemIds).size !== dto.orderItemIds.length) {
+      throw new BadRequestException('The same item cannot be fired more than once');
+    }
     for (const itemId of dto.orderItemIds) {
       if (!orderItemMap.has(itemId)) {
         throw new BadRequestException(`Item ${itemId} does not belong to this order`);
       }
       const item = orderItemMap.get(itemId);
+      if (item.beverageId || item.routingDestination === 'BILLING') {
+        throw new BadRequestException('Alcoholic beverage items must be sent directly to Billing, not Kitchen KDS');
+      }
       if (item.status !== OrderItemStatus.PENDING) {
         throw new BadRequestException(`Item "${item.menuItemName}" is already queued or cooking`);
+      }
+      if (requiresItemApproval && item.approvalStatus !== OrderItemApprovalStatus.APPROVED) {
+        throw new BadRequestException(`Item "${item.menuItemName}" must be individually approved before firing`);
+      }
+      const alreadyQueued = await this.batchItemRepo.findOne({ where: { orderItemId: itemId } });
+      if (alreadyQueued) {
+        throw new BadRequestException(`Item "${item.menuItemName}" has already been sent to the kitchen`);
       }
     }
 
@@ -92,15 +110,40 @@ export class KitchenService {
       batchItems: batchItems as KitchenBatchItem[],
     });
 
-    const saved = await this.batchRepo.save(batch);
-
-    // Update order items to QUEUED
-    for (const itemId of dto.orderItemIds) {
-      await this.ordersService.updateItemStatus(itemId, OrderItemStatus.QUEUED);
+    const claimedItemIds: string[] = [];
+    let saved: KitchenBatch;
+    try {
+      for (const itemId of dto.orderItemIds) {
+        const criteria: Partial<OrderItem> = {
+          id: itemId,
+          orderId: dto.orderId,
+          status: OrderItemStatus.PENDING,
+        };
+        if (requiresItemApproval) {
+          criteria.approvalStatus = OrderItemApprovalStatus.APPROVED;
+        }
+        const claim = await this.orderItemRepo.update(criteria, { status: OrderItemStatus.QUEUED });
+        if (claim.affected !== 1) {
+          const item = orderItemMap.get(itemId);
+          throw new BadRequestException(`Item "${item?.menuItemName ?? itemId}" has already been processed`);
+        }
+        claimedItemIds.push(itemId);
+      }
+      saved = await this.batchRepo.save(batch);
+    } catch (error) {
+      for (const itemId of claimedItemIds) {
+        await this.orderItemRepo.update(
+          { id: itemId, status: OrderItemStatus.QUEUED },
+          { status: OrderItemStatus.PENDING },
+        );
+      }
+      throw error;
     }
 
-    // Update order status to COOKING
-    await this.ordersService.updateOrderStatus(dto.orderId, OrderStatus.COOKING);
+    // Keep partially reviewed orders in the Approval Hub until every item is resolved.
+    if (order.status !== OrderStatus.APPROVAL_PENDING) {
+      await this.ordersService.updateOrderStatus(dto.orderId, OrderStatus.COOKING);
+    }
 
     // Emit batch fired event to kitchen stations
     this.eventsService.emit(SocketEvent.ORDER_FIRED, saved);
@@ -121,6 +164,26 @@ export class KitchenService {
   }
 
   async getKitchenQueue(station?: string): Promise<KitchenBatch[]> {
+    // Recover QR orders approved before approval began dispatching kitchen items
+    // server-side. An APPROVED QR order has not been fired yet; food items still
+    // pending here are safe to dispatch, while beverages remain billing-only.
+    const approvedQrOrders = await this.ordersService.findApprovedQrOrders();
+    for (const order of approvedQrOrders) {
+      const pendingKitchenItems = (order.items ?? []).filter(
+        (item) =>
+          item.status === OrderItemStatus.PENDING &&
+          item.approvalStatus === OrderItemApprovalStatus.APPROVED &&
+          !item.beverageId &&
+          item.routingDestination !== 'BILLING',
+      );
+      if (pendingKitchenItems.length > 0) {
+        await this.fireItems(
+          { orderId: order.id, orderItemIds: pendingKitchenItems.map((item) => item.id) },
+          order.approvedBy || 'approval-recovery',
+        );
+      }
+    }
+
     // Return all FIRED batches (active kitchen work)
     const batches = await this.batchRepo.find({
       where: { status: KitchenBatchStatus.FIRED },
@@ -132,8 +195,10 @@ export class KitchenService {
     const orderItemIds = batches.flatMap((b) => b.batchItems.map((i) => i.orderItemId));
     const orderItems = await this.orderItemRepo.find({ where: { id: In(orderItemIds) } });
     const statusMap = new Map(orderItems.map((item) => [item.id, item.status]));
+    const routingMap = new Map(orderItems.map((item) => [item.id, item.routingDestination]));
+    const beverageMap = new Map(orderItems.map((item) => [item.id, item.beverageId]));
 
-    // Attach live order item status and hide served items from kitchen queue
+    // Attach live order item status and hide served and beverage items from kitchen queue
     const withStatus = batches.map((batch) => ({
       ...batch,
       batchItems: batch.batchItems
@@ -141,7 +206,9 @@ export class KitchenService {
           ...item,
           orderItemStatus: statusMap.get(item.orderItemId) || OrderItemStatus.PENDING,
         }))
-        .filter((item: any) => item.orderItemStatus !== OrderItemStatus.SERVED),
+        .filter((item: any) => item.orderItemStatus !== OrderItemStatus.SERVED)
+        .filter((item: any) => routingMap.get(item.orderItemId) !== 'BILLING')
+        .filter((item: any) => !beverageMap.get(item.orderItemId)),
     })) as KitchenBatch[];
 
     const activeBatches = withStatus.filter((b) => b.batchItems.length > 0);
@@ -157,7 +224,9 @@ export class KitchenService {
       .createQueryBuilder('item')
       .where('item.status IN (:...statuses)', {
         statuses: [OrderItemStatus.QUEUED, OrderItemStatus.COOKING, OrderItemStatus.READY],
-      });
+      })
+      .andWhere('item.beverageId IS NULL')
+      .andWhere('(item.routingDestination IS NULL OR item.routingDestination != :billing)', { billing: 'BILLING' });
 
     if (linkedOrderItemIds.size > 0) {
       orphanItemsQuery.andWhere('item.id NOT IN (:...linkedIds)', {
@@ -260,6 +329,24 @@ export class KitchenService {
     }
     await this.ordersService.updateItemStatus(orderItemId, OrderItemStatus.SERVED);
     await this.checkAndAutoCompleteBatch(orderItemId);
+    await this.markOrderReadyWhenKitchenIsDone(item.orderId);
+  }
+
+  private async markOrderReadyWhenKitchenIsDone(orderId: string): Promise<void> {
+    const order = await this.ordersService.findOne(orderId);
+    const kitchenItems = (order.items ?? []).filter(
+      (item) =>
+        !item.beverageId &&
+        item.routingDestination !== 'BILLING' &&
+        ![OrderItemStatus.REJECTED, OrderItemStatus.REMOVED].includes(item.status),
+    );
+    if (
+      kitchenItems.length > 0 &&
+      kitchenItems.every((item) => item.status === OrderItemStatus.SERVED) &&
+      [OrderStatus.CREATED, OrderStatus.APPROVED, OrderStatus.COOKING].includes(order.status)
+    ) {
+      await this.ordersService.updateOrderStatus(orderId, OrderStatus.READY);
+    }
   }
 
   private async checkAndAutoCompleteBatch(orderItemId: string): Promise<void> {

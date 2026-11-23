@@ -14,7 +14,8 @@ export class SelectedOrderItemAddonDto {
 
 export class CreateOrderItemDto {
   @IsUUID()
-  menuItemId: string;
+  @IsOptional()
+  menuItemId?: string;
 
   @IsNumber()
   @Min(1)
@@ -23,6 +24,17 @@ export class CreateOrderItemDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  @IsUUID()
+  @IsOptional()
+  beverageId?: string;
+
+  @IsString()
+  @IsOptional()
+  servingSize?: string;
+
+  @IsOptional()
+  bottleOrderFlag?: boolean;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -34,6 +46,14 @@ export class CreateOrderItemDto {
 export class CreateOrderDto {
   @IsEnum(OrderType)
   orderType: OrderType;
+
+  @IsUUID()
+  @IsOptional()
+  sessionId?: string;
+
+  @IsUUID()
+  @IsOptional()
+  clientRequestId?: string;
 
   @IsString()
   @IsOptional()

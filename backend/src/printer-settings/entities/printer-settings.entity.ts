@@ -9,6 +9,7 @@ import {
 export type ReceiptElementKey = 'logo' | 'name' | 'address' | 'contact';
 export type ReceiptAlignment = 'left' | 'center' | 'right';
 export type ReceiptElementPosition = { x: number; y: number };
+const logoTextColumnType = process.env.DB_TYPE?.toLowerCase() === 'mysql' ? 'mediumtext' : 'text';
 
 @Entity('printer_settings')
 export class PrinterSettings {
@@ -18,7 +19,7 @@ export class PrinterSettings {
   @Column()
   name: string;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({ type: logoTextColumnType, nullable: true })
   logoUrl: string;
 
   @Column()
@@ -48,13 +49,13 @@ export class PrinterSettings {
   @Column({ type: 'int', default: 40 })
   logoSizePx: number;
 
-  @Column({ type: 'simple-json', default: () => `JSON_OBJECT('logo', 'left', 'name', 'center', 'address', 'center', 'contact', 'center')` })
+  @Column({ type: 'simple-json' })
   elementAlignments: Record<ReceiptElementKey, ReceiptAlignment>;
 
-  @Column({ type: 'simple-json', default: () => `JSON_OBJECT('logo', JSON_OBJECT('x', 5, 'y', 6), 'name', JSON_OBJECT('x', 50, 'y', 54), 'address', JSON_OBJECT('x', 50, 'y', 83), 'contact', JSON_OBJECT('x', 50, 'y', 115))` })
+  @Column({ type: 'simple-json' })
   elementPositions: Record<ReceiptElementKey, ReceiptElementPosition>;
 
-  @Column({ type: 'simple-json', default: () => `JSON_ARRAY('logo', 'name', 'address', 'contact')` })
+  @Column({ type: 'simple-json' })
   elementOrder: ReceiptElementKey[];
 
   @CreateDateColumn()

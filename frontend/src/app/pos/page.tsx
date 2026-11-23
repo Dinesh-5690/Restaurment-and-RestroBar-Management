@@ -5,6 +5,7 @@ import { ordersApi, kitchenApi, tablesApi } from '@/lib/api';
 import { getPrintSettings, getPrintSettingsAsync } from '@/lib/printSettings';
 import { buildReceiptPayloadFromOrder, printCommonReceipt } from '@/lib/receiptPrint';
 import { usePOSStore } from '@/store/usePOSStore';
+import { useAuthStore } from '@/store/useAuthStore';
 import { useSocket } from '@/hooks/useSocket';
 import MenuPanel from '@/components/pos/MenuPanel';
 import OrderPanel from '@/components/pos/OrderPanel';
@@ -24,18 +25,27 @@ const statusBadge: Record<string, string> = {
   READY: 'badge-green',
   COMPLETED: 'badge-gray',
   CANCELLED: 'badge-red',
+  REJECTED: 'badge-red',
+  REMOVED: 'badge-gray',
 };
 
+const MAX_MERGE_BILLS = 5;
+
 function POSPageContent() {
+  const user = useAuthStore((state) => state.user);
+  const canViewActiveOrders =
+    user?.role === 'ADMIN' ||
+    ((user?.role === 'CASHIER' || user?.role === 'WAITER') &&
+      user.accessRights?.includes('POS') === true);
   const { selectedTable, selectedOrderId, selectedOrderBillNo, cart, orderType, setSelectedTable, setSelectedOrderId, setSelectedOrderBillNo, setOrderType, addToCart,
-    removeFromCart, updateQuantity, clearCart, cartSubtotal } = usePOSStore();
+    removeFromCart, updateQuantity, clearCart, cartSubtotal, addBeverageToCart } = usePOSStore();
 
   const [tab, setTab] = useState<'new' | 'active'>('new');
   const [mobileTab, setMobileTab] = useState<'menu' | 'order'>('menu');
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [placing, setPlacing] = useState(false);
   const [fireOrder, setFireOrder] = useState<Order | null>(null);
-  const [paymentSession, setPaymentSession] = useState<{ label: string; amount: number; orderIds: string[]; items?: { menuItemName: string; quantity: number; unitPrice: number; lineTotal: number; notes?: string }[]; billNo?: string; mergedBills?: { billLabel: string; items: { menuItemName: string; quantity: number; unitPrice: number; lineTotal: number; notes?: string }[] }[] } | null>(null);
+  const [paymentSession, setPaymentSession] = useState<{ label: string; amount: number; orderIds: string[]; items?: { menuItemName: string; quantity: number; unitPrice: number; lineTotal: number; isBeverage?: boolean; bottleSizeMl?: number; notes?: string }[]; billNo?: string; mergedBills?: { billLabel: string; items: { menuItemName: string; quantity: number; unitPrice: number; lineTotal: number; isBeverage?: boolean; bottleSizeMl?: number; notes?: string }[] }[] } | null>(null);
   const [orderInfoModal, setOrderInfoModal] = useState<{ order: Order; billNo: string } | null>(null);
   const [readyForPaymentModal, setReadyForPaymentModal] = useState<{ order: Order; billNo: string } | null>(null);
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -55,17 +65,46 @@ function POSPageContent() {
   const searchParams = useSearchParams();
   const returnToTables = searchParams.get('returnTo') === 'tables';
 
+  const isBillingItem = (item: OrderItem) => !!item.beverageId || item.routingDestination === 'BILLING';
+  const isBillableItem = (item: OrderItem) =>
+    !['REJECTED', 'REMOVED'].includes(item.status) &&
+    !['REJECTED', 'REMOVED'].includes(item.approvalStatus ?? 'PENDING');
+  const hasPassedApproval = (order: Order) =>
+    order.status !== 'APPROVAL_PENDING' &&
+    !['COMPLETED', 'CANCELLED'].includes(order.status);
+  const displayItemStatus = (order: Order, item: OrderItem) =>
+    isBillingItem(item) && item.status === 'PENDING' && hasPassedApproval(order)
+      ? 'READY'
+      : item.status;
+  const isWaitingForApproval = (order: Order, item: OrderItem) =>
+    order.status === 'APPROVAL_PENDING' &&
+    item.status === 'PENDING' &&
+    (item.approvalStatus ?? 'PENDING') === 'PENDING';
+  const normalizeActiveOrder = (order: Order): Order => ({
+    ...order,
+    items: order.items.map((item) => ({ ...item, status: displayItemStatus(order, item) })),
+  });
+  const isReadyForSettlement = (order: Order) =>
+    order.items.filter(isBillableItem).length > 0 &&
+    order.items.filter(isBillableItem).every((item) =>
+      isBillingItem(item)
+        ? ['READY', 'SERVED'].includes(displayItemStatus(order, item))
+        : item.status === 'SERVED',
+    );
+
   const fetchActiveOrders = useCallback(async () => {
     setLoadingOrders(true);
     try {
       const r = await ordersApi.active();
-      setActiveOrders(r.data);
+      setActiveOrders(r.data.map(normalizeActiveOrder));
     } finally {
       setLoadingOrders(false);
     }
   }, []);
 
-  useEffect(() => { fetchActiveOrders(); }, [fetchActiveOrders]);
+  useEffect(() => {
+    if (canViewActiveOrders) fetchActiveOrders();
+  }, [fetchActiveOrders, canViewActiveOrders]);
 
   // Always use DINE_IN order type (Online and QR removed)
   useEffect(() => {
@@ -73,9 +112,14 @@ function POSPageContent() {
   }, [setOrderType]);
 
   const getBillNo = (order: Order) => order.billNo ?? `BILL-${order.id.slice(0, 8).toUpperCase()}`;
+  const selectedMergeOrders = mergeSelected
+    .map((id) => activeOrders.find((order) => order.id === id))
+    .filter((order): order is Order => Boolean(order));
+  const isQrMergeSelection = selectedMergeOrders.length > 0 &&
+    selectedMergeOrders.every((order) => order.orderType === 'QR');
 
-  const canDeleteItem = (item: OrderItem) =>
-    item.status === 'PENDING' || item.status === 'QUEUED';
+  const canDeleteItem = (order: Order, item: OrderItem) =>
+    order.status === 'CREATED' && item.status === 'PENDING';
 
   const deleteOrderItem = async (itemId: string) => {
     if (!confirm('Delete this item?')) return;
@@ -137,11 +181,10 @@ function POSPageContent() {
 
   const checkAndShowReadyForPayment = (order: Order) => {
     if (order.orderType !== 'TAKE_AWAY') return;
-    const allServed = order.items.every((item) => item.status === 'SERVED');
-    if (allServed) {
+    if (isReadyForSettlement(order)) {
       playSound();
       setReadyForPaymentModal({ order, billNo: getBillNo(order) });
-      setTab('active');
+      setTab(canViewActiveOrders ? 'active' : 'new');
     }
   };
 
@@ -157,7 +200,7 @@ function POSPageContent() {
   };
 
   const renderServedAction = (order: Order) => {
-    if (!order.items.every((i: OrderItem) => i.status === 'SERVED')) {
+    if (!isReadyForSettlement(order)) {
       return null;
     }
 
@@ -176,11 +219,12 @@ function POSPageContent() {
       <button
         onClick={() => {
           const currentBillNo = getBillNo(order);
-          const grouped = [...order.items].sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime()).reduce<Record<string, {
+          const grouped = order.items.filter(isBillableItem).sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime()).reduce<Record<string, {
             menuItemName: string;
             quantity: number;
             unitPrice: number;
             lineTotal: number;
+            isBeverage?: boolean;
             notes?: string;
             addonSummary?: string;
             addOns?: OrderItem['addOns'];
@@ -192,6 +236,7 @@ function POSPageContent() {
               quantity: item.quantity,
               unitPrice: Number(item.unitPrice),
               lineTotal: Number(item.lineTotal),
+              isBeverage: !!item.beverageId,
               notes: item.notes,
               addonSummary: item.addonSummary,
               addOns: item.addOns,
@@ -246,25 +291,116 @@ function POSPageContent() {
   };
 
   const handleMergeToggle = (orderId: string) => {
-    setMergeSelected((prev) =>
-      prev.includes(orderId) ? prev.filter((id) => id !== orderId) : [...prev, orderId],
-    );
+    if (mergeSelected.includes(orderId)) {
+      setMergeSelected((prev) => prev.filter((id) => id !== orderId));
+      return;
+    }
+    const order = activeOrders.find((entry) => entry.id === orderId);
+    if (!order || !['DINE_IN', 'QR'].includes(order.orderType)) {
+      toast.error('Only dine-in and QR bills can be combined');
+      return;
+    }
+    const firstSelected = activeOrders.find((entry) => entry.id === mergeSelected[0]);
+    if (firstSelected && firstSelected.orderType !== order.orderType) {
+      toast.error('Select bills of the same type');
+      return;
+    }
+    if (
+      order.orderType === 'QR' &&
+      firstSelected &&
+      (order.tableId !== firstSelected.tableId ||
+        !order.sessionId ||
+        order.sessionId !== firstSelected.sessionId)
+    ) {
+      toast.error('QR bills can only be combined within the same active table session');
+      return;
+    }
+    if (mergeSelected.length >= MAX_MERGE_BILLS) {
+      toast.error(`You can merge up to ${MAX_MERGE_BILLS} bills at a time`);
+      return;
+    }
+    setMergeSelected((prev) => [...prev, orderId]);
   };
 
   const handleMergeConfirm = async () => {
-    if (mergeSelected.length !== 2) {
-      toast.error('Select exactly 2 bills to merge');
+    if (mergeSelected.length < 2 || mergeSelected.length > MAX_MERGE_BILLS) {
+      toast.error(`Select 2 to ${MAX_MERGE_BILLS} bills to merge`);
+      return;
+    }
+    if (selectedMergeOrders.length !== mergeSelected.length) {
+      toast.error('Some selected bills are no longer active. Refresh the orders and try again.');
+      await fetchActiveOrders();
+      return;
+    }
+
+    if (isQrMergeSelection) {
+      const firstOrder = selectedMergeOrders[0];
+      if (
+        selectedMergeOrders.some((order) =>
+          order.tableId !== firstOrder.tableId ||
+          !order.sessionId ||
+          order.sessionId !== firstOrder.sessionId ||
+          order.settlementStatus === 'PAID' ||
+          !isReadyForSettlement(order) ||
+          order.items.length === 0,
+        )
+      ) {
+        toast.error('Select unpaid QR bills from the same table session that are ready for settlement');
+        return;
+      }
+
+      setPaymentSession({
+        label: `Table ${firstOrder.tableNumber ?? ''}`,
+        amount: selectedMergeOrders.reduce((total, order) => total + Number(order.totalAmount), 0),
+        orderIds: selectedMergeOrders.map((order) => order.id),
+        billNo: `Combined ${selectedMergeOrders.length} QR bills`,
+        mergedBills: selectedMergeOrders.map((order) => ({
+          billLabel: getBillNo(order),
+          items: order.items.filter(isBillableItem).map((item) => ({
+            menuItemName: item.menuItemName,
+            quantity: item.quantity,
+            unitPrice: Number(item.unitPrice),
+            lineTotal: Number(item.lineTotal),
+            isBeverage: !!item.beverageId,
+            bottleSizeMl: item.bottleSizeMl,
+            notes: item.notes,
+          })),
+        })),
+      });
+      setMergeMode(false);
+      setMergeSelected([]);
+      return;
+    }
+
+    if (selectedMergeOrders.some((order) => order.orderType !== 'DINE_IN')) {
+      toast.error('Select dine-in bills to merge');
       return;
     }
     setMerging(true);
+    let mergedCount = 0;
     try {
-      await ordersApi.merge(mergeSelected[0], mergeSelected[1]);
+      try {
+        const destinationOrderId = mergeSelected[mergeSelected.length - 1];
+        for (const sourceOrderId of mergeSelected.slice(0, -1)) {
+          await ordersApi.merge(sourceOrderId, destinationOrderId);
+          mergedCount += 1;
+        }
+      } catch (err: any) {
+        setMergeMode(false);
+        setMergeSelected([]);
+        fetchActiveOrders().catch(() => toast.error('Active bills could not be refreshed.'));
+        if (mergedCount > 0) {
+          toast.error('The merge did not finish. Review the refreshed active bills before retrying.');
+          return;
+        }
+        toast.error(err.response?.data?.message || 'Merge failed');
+        return;
+      }
+
       toast.success('Bills merged successfully');
       setMergeMode(false);
       setMergeSelected([]);
-      fetchActiveOrders();
-    } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Merge failed');
+      fetchActiveOrders().catch(() => toast.error('Bills merged, but active orders could not be refreshed.'));
     } finally {
       setMerging(false);
     }
@@ -308,11 +444,13 @@ function POSPageContent() {
       setActiveOrders((prev) => [data, ...prev.filter((o) => o.id !== data.id)]);
     },
     ORDER_APPROVED: (data: any) => {
-      setActiveOrders((prev) => prev.map((o) => (o.id === data.id ? data : o)));
+      const approvedOrder = normalizeActiveOrder(data as Order);
+      setActiveOrders((prev) => prev.map((o) => (o.id === data.id ? approvedOrder : o)));
       toast.success('Order approved!');
     },
     ORDER_FIRED: (data: any) => {
-      setActiveOrders((prev) => prev.map((o) => (o.id === data.id ? data : o)));
+      const firedOrder = normalizeActiveOrder(data as Order);
+      setActiveOrders((prev) => prev.map((o) => (o.id === data.id ? firedOrder : o)));
     },
     ITEM_COOKING: () => {
       fetchActiveOrders();
@@ -348,14 +486,15 @@ function POSPageContent() {
     try {
       if (selectedOrderId) {
         const res = await ordersApi.addItems(selectedOrderId, {
-          items: cart.map((c: CartItem) => ({ menuItemId: c.menuItemId, quantity: c.quantity, notes: c.notes, selectedAddOns: c.selectedAddOns })),
+          items: cart.map((c: CartItem) => c.beverageId ? { beverageId: c.beverageId, servingSize: c.servingSize, bottleOrderFlag: c.bottleOrderFlag, quantity: c.quantity, notes: c.notes } : { menuItemId: c.menuItemId, quantity: c.quantity, notes: c.notes, selectedAddOns: c.selectedAddOns }),
         });
         const updatedOrder: Order = res.data.order;
         const itemIds: string[] = res.data.addedItemIds;
 
-        if (itemIds.length > 0) {
-          await kitchenApi.fireItems(updatedOrder.id, itemIds);
-          toast.success('Items added to bill and fired to kitchen!');
+        const kitchenItemIds = updatedOrder.items.filter((i: OrderItem) => i.routingDestination === 'KITCHEN' && itemIds.includes(i.id)).map((i: OrderItem) => i.id);
+        if (kitchenItemIds.length > 0) {
+          await kitchenApi.fireItems(updatedOrder.id, kitchenItemIds);
+          toast.success('Items added to bill and routed!');
         } else {
           toast.success('Items added to bill!');
         }
@@ -363,13 +502,14 @@ function POSPageContent() {
         const res = await ordersApi.create({
           orderType,
           tableId: selectedTable?.id,
-          items: cart.map((c: CartItem) => ({ menuItemId: c.menuItemId, quantity: c.quantity, notes: c.notes, selectedAddOns: c.selectedAddOns })),
+          items: cart.map((c: CartItem) => c.beverageId ? { beverageId: c.beverageId, servingSize: c.servingSize, bottleOrderFlag: c.bottleOrderFlag, quantity: c.quantity, notes: c.notes } : { menuItemId: c.menuItemId, quantity: c.quantity, notes: c.notes, selectedAddOns: c.selectedAddOns }),
         });
         const createdOrder: Order = res.data;
         const itemIds = createdOrder.items.map((i: OrderItem) => i.id);
 
-        if (orderType === 'DINE_IN' && itemIds.length > 0) {
-          await kitchenApi.fireItems(createdOrder.id, itemIds);
+        const kitchenItemIds = createdOrder.items.filter((i: OrderItem) => i.routingDestination === 'KITCHEN').map((i: OrderItem) => i.id);
+        if (orderType === 'DINE_IN' && kitchenItemIds.length > 0 && createdOrder.status !== 'APPROVAL_PENDING') {
+          await kitchenApi.fireItems(createdOrder.id, kitchenItemIds);
           toast.success('Order placed & fired to kitchen!');
         } else {
           toast.success(
@@ -388,7 +528,7 @@ function POSPageContent() {
         return;
       }
 
-      setTab('active');
+      setTab(canViewActiveOrders ? 'active' : 'new');
       fetchActiveOrders();
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'Failed to place order');
@@ -412,12 +552,14 @@ function POSPageContent() {
           >
             New Order
           </button>
-          <button
-            onClick={() => { setTab('active'); fetchActiveOrders(); }}
-            className={clsx('px-4 py-1.5 rounded-lg text-sm font-medium', tab === 'active' ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-600')}
-          >
-            Active <span className="ml-1 badge badge-gray">{activeOrders.length}</span>
-          </button>
+            {canViewActiveOrders && (
+            <button
+              onClick={() => { setTab('active'); fetchActiveOrders(); }}
+              className={clsx('px-4 py-1.5 rounded-lg text-sm font-medium', tab === 'active' ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-600')}
+            >
+              Active Bills <span className="ml-1 badge badge-gray">{activeOrders.length}</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -546,13 +688,13 @@ function POSPageContent() {
               )}
               {mergeMode && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-purple-700 font-medium">{mergeSelected.length}/2 selected</span>
+                  <span className="text-xs text-purple-700 font-medium">{mergeSelected.length}/{MAX_MERGE_BILLS} selected</span>
                   <button
                     onClick={handleMergeConfirm}
-                    disabled={mergeSelected.length !== 2 || merging}
+                    disabled={mergeSelected.length < 2 || mergeSelected.length > MAX_MERGE_BILLS || merging}
                     className="px-3 py-1.5 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-700 disabled:opacity-50"
                   >
-                    {merging ? 'Merging…' : 'Confirm Merge'}
+                    {merging ? 'Merging…' : isQrMergeSelection ? 'Combine & Pay' : 'Confirm Merge'}
                   </button>
                   <button
                     onClick={() => { setMergeMode(false); setMergeSelected([]); }}
@@ -578,14 +720,22 @@ function POSPageContent() {
               <button
                 onClick={fetchActiveOrders}
                 className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700"
+                title="Refresh active bills"
               >
                 <RefreshCw className={clsx('w-4 h-4', loadingOrders && 'animate-spin')} />
               </button>
+              {user?.role === 'ADMIN' && (
+                <Link href="/history" className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50">
+                  Payment History
+                </Link>
+              )}
             </div>
           </div>
           {mergeMode && (
             <div className="mb-3 bg-purple-50 border border-purple-100 rounded-xl px-4 py-2 text-xs text-purple-700">
-              Select exactly 2 dine-in bills to merge into one.
+              {isQrMergeSelection
+                ? `QR bills combine at checkout; original order records are preserved.`
+                : `Select 2 to ${MAX_MERGE_BILLS} bills of the same type. The last dine-in bill selected is the destination.`}
             </div>
           )}
           {transferMode && !transferSource && (
@@ -603,16 +753,17 @@ function POSPageContent() {
               const isMergeSelected = mergeSelected.includes(order.id);
               const isTransferSource = transferSource?.id === order.id;
               const isDineIn = order.orderType === 'DINE_IN';
+              const isMergeable = isDineIn || order.orderType === 'QR';
               return (
               <div
                 key={order.id}
                 onClick={() => {
-                  if (mergeMode && isDineIn) { handleMergeToggle(order.id); return; }
+                  if (mergeMode && isMergeable) { handleMergeToggle(order.id); return; }
                   if (transferMode && isDineIn && !transferSource) { handleTransferSelect(order); return; }
                 }}
                 className={clsx(
                   'card p-3 flex flex-col h-full',
-                  (mergeMode && isDineIn) && 'cursor-pointer hover:ring-2 hover:ring-purple-300',
+                  (mergeMode && isMergeable) && 'cursor-pointer hover:ring-2 hover:ring-purple-300',
                   (transferMode && !transferSource && isDineIn) && 'cursor-pointer hover:ring-2 hover:ring-blue-300',
                   isMergeSelected && 'ring-2 ring-purple-500 bg-purple-50',
                   isTransferSource && 'ring-2 ring-blue-500 bg-blue-50',
@@ -630,27 +781,45 @@ function POSPageContent() {
                       <Clock className="w-3 h-3" />
                       {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
+                    {order.status === 'APPROVAL_PENDING' && user?.accessRights?.includes('APPROVAL') && (
+                      <Link
+                        href="/approval"
+                        onClick={(event) => event.stopPropagation()}
+                        className="inline-block mt-1 text-[10px] font-semibold text-orange-700 hover:underline"
+                      >
+                        Review in Approval Hub
+                      </Link>
+                    )}
                   </div>
-                  <span className={`badge text-[10px] py-1 px-2 ${statusBadge[order.status]}`}>
-                    {order.status.replace('_', ' ')}
-                  </span>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className={`badge text-[10px] py-1 px-2 ${statusBadge[order.status]}`}>
+                      {order.status.replace('_', ' ')}
+                    </span>
+                    <span className={clsx('badge text-[9px] py-0.5 px-2', order.settlementStatus === 'PAID' ? 'badge-green' : 'badge-orange')}>
+                      {order.settlementStatus ?? 'UNPAID'}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-y-auto space-y-1 mb-3 text-[10px] text-gray-600">
-                  {order.items.map((item) => (
+                  {order.items.map((item) => {
+                    const itemStatus = displayItemStatus(order, item);
+                    const waitingForApproval = isWaitingForApproval(order, item);
+                    return (
                     <div key={item.id}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 flex-1 truncate">{item.menuItemName} × {item.quantity}</div>
                         <div className="flex items-center gap-2 shrink-0">
                         <span className={clsx(
                           'badge text-[10px] py-0.5 px-2',
-                          item.status === 'READY' && 'badge-green',
-                          item.status === 'COOKING' && 'badge-orange',
-                          item.status === 'PENDING' && 'badge-gray',
-                          item.status === 'QUEUED' && 'badge-blue',
-                          item.status === 'SERVED' && 'badge-gray',
-                        )}>
-                          {item.status}
+                          waitingForApproval && 'badge-yellow',
+                          itemStatus === 'READY' && 'badge-green',
+                          itemStatus === 'COOKING' && 'badge-orange',
+                          itemStatus === 'PENDING' && 'badge-gray',
+                          itemStatus === 'QUEUED' && 'badge-blue',
+                          itemStatus === 'SERVED' && 'badge-gray',
+                        )} title={item.status === 'SERVED' && order.status === 'APPROVAL_PENDING' ? 'Already served from an earlier order; it will not be sent to the kitchen again.' : undefined}>
+                          {waitingForApproval ? 'AWAITING APPROVAL' : itemStatus}
                         </span>
                           <span className="font-semibold text-gray-700">₹{Number(item.lineTotal).toFixed(2)}</span>
                         </div>
@@ -665,7 +834,8 @@ function POSPageContent() {
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="border-t pt-3 text-[11px]">
@@ -698,7 +868,11 @@ function POSPageContent() {
                     </button>
                     <div className="flex-1" />
                     {['APPROVED', 'CREATED'].includes(order.status) &&
-                      order.items.some((i: OrderItem) => i.status === 'PENDING') && (
+                      order.items.some((i: OrderItem) =>
+                        i.status === 'PENDING' &&
+                        !i.beverageId &&
+                        i.routingDestination !== 'BILLING'
+                      ) && (
                         <button
                           onClick={(e) => { e.stopPropagation(); setFireOrder(order); }}
                           className="flex items-center gap-1 px-3 py-1.5 bg-orange-500 text-white rounded-lg text-xs font-medium hover:bg-orange-600"
@@ -742,7 +916,10 @@ function POSPageContent() {
             <div className="px-5 py-4 border-b flex items-center justify-between gap-3">
               <div>
                 <h3 className="font-bold text-gray-900">{orderInfoModal.billNo}</h3>
-                <p className="text-xs text-gray-500">Order items and amounts</p>
+                <p className="text-xs text-gray-500">
+                  {orderInfoModal.order.orderType === 'DINE_IN' ? `Table ${orderInfoModal.order.tableNumber ?? '—'} · ` : ''}
+                  Order {orderInfoModal.order.id.slice(0, 8)} · {orderInfoModal.order.status.replace('_', ' ')} · {orderInfoModal.order.settlementStatus ?? 'UNPAID'}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -774,6 +951,11 @@ function POSPageContent() {
                     <div>
                       <div className="font-medium text-gray-900">{item.menuItemName}</div>
                       <div className="text-xs text-gray-500">Qty: {item.quantity} · Unit: ₹{Number(item.unitPrice).toFixed(2)}</div>
+                      {(item.beverageId || item.routingDestination === 'BILLING') && (item.bottleSizeMl || item.servingSize) && (
+                        <div className="text-xs text-purple-700">
+                          Size: {item.bottleSizeMl ? `${item.bottleSizeMl} ml bottle` : item.servingSize}
+                        </div>
+                      )}
                       {item.addOns && item.addOns.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1">
                           {item.addOns.map((addon) => (
@@ -785,7 +967,7 @@ function POSPageContent() {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      {canDeleteItem(item) && (
+                      {canDeleteItem(orderInfoModal.order, item) && (
                         <button
                           onClick={() => deleteOrderItem(item.id)}
                           className="text-red-600 text-xs font-semibold hover:text-red-800"
@@ -800,9 +982,10 @@ function POSPageContent() {
               ))}
             </div>
 
-            <div className="px-5 py-4 border-t flex items-center justify-between bg-gray-50">
-              <span className="font-semibold text-gray-700">Total</span>
-              <span className="font-bold text-gray-900">₹{Number(orderInfoModal.order.totalAmount).toFixed(2)}</span>
+            <div className="px-5 py-4 border-t bg-gray-50 text-sm">
+              <div className="flex justify-between text-gray-600"><span>Subtotal</span><span>₹{Number(orderInfoModal.order.subtotal).toFixed(2)}</span></div>
+              <div className="mt-1 flex justify-between text-gray-600"><span>Tax</span><span>₹{Number(orderInfoModal.order.taxAmount).toFixed(2)}</span></div>
+              <div className="mt-2 flex justify-between border-t border-gray-200 pt-2 font-bold text-gray-900"><span>Total Amount</span><span>₹{Number(orderInfoModal.order.totalAmount).toFixed(2)}</span></div>
             </div>
           </div>
         </div>
@@ -895,6 +1078,7 @@ function POSPageContent() {
           orderIds={paymentSession.orderIds}
           items={paymentSession.items}
           billNo={paymentSession.billNo}
+          mergedBills={paymentSession.mergedBills}
           onClose={() => setPaymentSession(null)}
           onComplete={async (orderIds: string[], paymentMethod, couponCode?: string) => {
             await Promise.all(orderIds.map((id: string) => ordersApi.complete(id, {

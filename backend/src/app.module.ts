@@ -23,6 +23,25 @@ import { Expense } from './expenses/entities/expense.entity';
 import { Coupon } from './coupons/entities/coupon.entity';
 import { Reservation } from './reservations/entities/reservation.entity';
 import { Attendance } from './attendance/entities/attendance.entity';
+import { BeverageCategory } from './beverages/entities/beverage-category.entity';
+import { BeverageProduct } from './beverages/entities/beverage-product.entity';
+import { BeverageInventory } from './beverages/entities/beverage-inventory.entity';
+import { BeverageStockTransaction } from './beverages/entities/beverage-stock-transaction.entity';
+import { BeveragesModule } from './beverages/beverages.module';
+import { BottleManagementModule } from './bottle-management/bottle-management.module';
+import { Bottle } from './bottle-management/entities/bottle.entity';
+import { BottleQRCode } from './bottle-management/entities/bottle-qr-code.entity';
+import { BottleMovementLog } from './bottle-management/entities/bottle-movement-log.entity';
+import { TasmacVerificationLog } from './bottle-management/entities/tasmac-verification-log.entity';
+import { KitchenInventoryModule } from './kitchen-inventory/kitchen-inventory.module';
+import { RawMaterial } from './kitchen-inventory/entities/raw-material.entity';
+import { MaterialStock } from './kitchen-inventory/entities/material-stock.entity';
+import { KitchenStockTransaction } from './kitchen-inventory/entities/stock-transaction.entity';
+import { InventoryAlert } from './kitchen-inventory/entities/inventory-alert.entity';
+import { MaterialBatch } from './kitchen-inventory/entities/material-batch.entity';
+import { MaterialCategory } from './kitchen-inventory/entities/material-category.entity';
+import { Supplier } from './kitchen-inventory/entities/supplier.entity';
+import { MaterialSuggestion } from './kitchen-inventory/entities/material-suggestion.entity';
 
 import { User } from './users/entities/user.entity';
 import { Table } from './tables/entities/table.entity';
@@ -38,6 +57,7 @@ import { OrderItemAddon } from './orders/entities/order-item-addon.entity';
 import { KitchenBatch } from './kitchen/entities/kitchen-batch.entity';
 import { KitchenBatchItem } from './kitchen/entities/kitchen-batch-item.entity';
 import { PrinterSettings } from './printer-settings/entities/printer-settings.entity';
+import { OrderItemApprovalHistory } from './approval/entities/order-item-approval-history.entity';
 
 @Module({
   imports: [
@@ -60,9 +80,11 @@ import { PrinterSettings } from './printer-settings/entities/printer-settings.en
             database: cfg.get('DB_NAME', 'restaurant_db'),
             entities: [
               User, Table, MenuCategory, MenuItem, KitchenStation,
-              ExtraAddon, CategoryAddon, ItemAddon,
+              ExtraAddon, CategoryAddon, ItemAddon, OrderItemApprovalHistory,
               Order, OrderItem, OrderItemAddon, KitchenBatch, KitchenBatchItem,
               PrinterSettings, Expense, Coupon, Reservation, Attendance,
+              BeverageCategory, BeverageProduct, BeverageInventory, BeverageStockTransaction,
+              Bottle, BottleQRCode, BottleMovementLog, TasmacVerificationLog, RawMaterial, MaterialStock, KitchenStockTransaction, InventoryAlert, MaterialBatch, MaterialCategory, Supplier, MaterialSuggestion,
             ],
             synchronize: true,   // auto-creates/updates tables
             logging: false,
@@ -71,20 +93,31 @@ import { PrinterSettings } from './printer-settings/entities/printer-settings.en
         }
 
         if (dbType === 'postgres') {
+          const databaseUrl = cfg.get<string>('DATABASE_URL');
+          const dbSynchronize = cfg.get<string>('DB_SYNCHRONIZE') === undefined
+            ? cfg.get('NODE_ENV', 'development') !== 'production'
+            : cfg.get<string>('DB_SYNCHRONIZE') === 'true';
           return {
             type: 'postgres',
-            host: cfg.get('DB_HOST', 'localhost'),
-            port: cfg.get<number>('DB_PORT', 5432),
-            username: cfg.get('DB_USER', 'postgres'),
-            password: cfg.get('DB_PASS', 'postgres'),
-            database: cfg.get('DB_NAME', 'restaurant_db'),
+            ...(databaseUrl
+              ? { url: databaseUrl }
+              : {
+                  host: cfg.get('DB_HOST', 'localhost'),
+                  port: cfg.get<number>('DB_PORT', 5432),
+                  username: cfg.get('DB_USER', 'postgres'),
+                  password: cfg.get('DB_PASS', 'postgres'),
+                  database: cfg.get('DB_NAME', 'restaurant_db'),
+                }),
+            ssl: cfg.get<string>('DB_SSL') === 'true' ? true : undefined,
             entities: [
               User, Table, MenuCategory, MenuItem, KitchenStation,
-              ExtraAddon, CategoryAddon, ItemAddon,
+              ExtraAddon, CategoryAddon, ItemAddon, OrderItemApprovalHistory,
               Order, OrderItem, OrderItemAddon, KitchenBatch, KitchenBatchItem,
               PrinterSettings, Expense, Coupon, Reservation, Attendance,
+              BeverageCategory, BeverageProduct, BeverageInventory, BeverageStockTransaction,
+              Bottle, BottleQRCode, BottleMovementLog, TasmacVerificationLog, RawMaterial, MaterialStock, KitchenStockTransaction, InventoryAlert, MaterialBatch, MaterialCategory, Supplier, MaterialSuggestion,
             ],
-            synchronize: cfg.get('NODE_ENV', 'development') !== 'production',
+            synchronize: dbSynchronize,
             logging: false,
           } as any;
         }
@@ -98,9 +131,11 @@ import { PrinterSettings } from './printer-settings/entities/printer-settings.en
           logging: false,
           entities: [
             User, Table, MenuCategory, MenuItem, KitchenStation,
-            ExtraAddon, CategoryAddon, ItemAddon,
+            ExtraAddon, CategoryAddon, ItemAddon, OrderItemApprovalHistory,
             Order, OrderItem, OrderItemAddon, KitchenBatch, KitchenBatchItem,
             PrinterSettings, Expense, Coupon, Reservation, Attendance,
+            BeverageCategory, BeverageProduct, BeverageInventory, BeverageStockTransaction,
+            Bottle, BottleQRCode, BottleMovementLog, TasmacVerificationLog, RawMaterial, MaterialStock, KitchenStockTransaction, InventoryAlert, MaterialBatch, MaterialCategory, Supplier, MaterialSuggestion,
           ],
         } as any;
       },
@@ -122,6 +157,9 @@ import { PrinterSettings } from './printer-settings/entities/printer-settings.en
     CouponsModule,
     ReservationsModule,
     AttendanceModule,
+    BeveragesModule,
+    BottleManagementModule,
+    KitchenInventoryModule,
   ],
 })
 export class AppModule {}

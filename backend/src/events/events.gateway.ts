@@ -64,6 +64,17 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     return { joined: room };
   }
 
+  @SubscribeMessage('join:session')
+  handleJoinSession(
+    @MessageBody() sessionId: string,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const room = `session:${sessionId}`;
+    client.join(room);
+    this.logger.log(`Client ${client.id} watching table session: ${sessionId}`);
+    return { joined: room };
+  }
+
   // Client joins the approval hub room
   @SubscribeMessage('join:approval')
   handleJoinApproval(@ConnectedSocket() client: Socket) {

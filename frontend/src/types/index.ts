@@ -1,5 +1,5 @@
 ﻿// ==================== Enums ====================
-export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAITER' | 'KITCHEN';
+export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAITER' | 'KITCHEN' | 'BEVERAGE_MANAGER';
 export type SalaryType = 'MONTHLY' | 'DAILY' | 'WEEKLY' | 'BIWEEKLY';
 export type TableStatus = 'FREE' | 'OCCUPIED' | 'RESERVED';
 export type OrderType = 'DINE_IN' | 'TAKE_AWAY' | 'ONLINE' | 'QR';
@@ -13,14 +13,15 @@ export type OrderStatus =
   | 'READY'
   | 'COMPLETED'
   | 'CANCELLED';
-export type OrderItemStatus = 'PENDING' | 'QUEUED' | 'COOKING' | 'READY' | 'SERVED';
+export type OrderItemStatus = 'PENDING' | 'QUEUED' | 'COOKING' | 'READY' | 'SERVED' | 'REJECTED' | 'REMOVED';
+export type OrderItemApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'REMOVED';
 export type KitchenBatchStatus = 'WAITING' | 'FIRED' | 'DONE';
 export type CouponDiscountType = 'PERCENT' | 'FLAT';
 export type ReservationStatus = 'PENDING' | 'CONFIRMED' | 'SEATED' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW';
 export type AttendanceStatus = 'PRESENT' | 'LATE' | 'HALF_DAY' | 'ABSENT' | 'LEAVE';
 
 // ==================== Entities ====================
-export type AccessRight = 'POS' | 'KITCHEN' | 'TABLES' | 'ADMIN';
+export type AccessRight = 'DASHBOARD' | 'POS' | 'KITCHEN' | 'KITCHEN_INVENTORY' | 'BEVERAGES' | 'BOTTLE_MANAGEMENT' | 'APPROVAL' | 'TABLES' | 'KIOSK' | 'ADMIN';
 
 export interface User {
   id: string;
@@ -120,8 +121,15 @@ export interface OrderItem {
   addOns?: OrderItemAddon[];
   sourceBillNo?: string;
   status: OrderItemStatus;
+  approvalStatus?: OrderItemApprovalStatus;
   kitchenStation?: string;
   notes?: string;
+  routingDestination?: 'KITCHEN' | 'BILLING' | 'MIXED';
+  beverageId?: string;
+  bottleSizeMl?: number;
+  servingSize?: string;
+  bottleOrderFlag?: boolean;
+  rejectionReason?: string;
   cookingStartedAt?: string;
   readyAt?: string;
   servedAt?: string;
@@ -133,6 +141,7 @@ export interface Order {
   billNo?: string;
   orderType: OrderType;
   tableId?: string;
+  sessionId?: string;
   tableNumber?: number;
   status: OrderStatus;
   subtotal: number;
@@ -154,6 +163,18 @@ export interface Order {
   rejectionReason?: string;
   notes?: string;
   items: OrderItem[];
+  createdAt: string;
+}
+
+export interface OrderItemApprovalHistory {
+  id: string;
+  orderId: string;
+  orderItemId: string;
+  action: 'EDIT' | 'REMOVE' | 'APPROVE' | 'REJECT';
+  actorUserId: string;
+  reason?: string;
+  beforeSnapshot: string;
+  afterSnapshot?: string;
   createdAt: string;
 }
 
@@ -247,6 +268,9 @@ export interface KitchenBatch {
 
 export interface CartItem {
   cartLineId?: string;
+  beverageId?: string;
+  servingSize?: string;
+  bottleOrderFlag?: boolean;
   menuItemId: string;
   menuItemName: string;
   quantity: number;

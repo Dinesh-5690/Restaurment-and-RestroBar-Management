@@ -8,7 +8,7 @@ import {
   UpdateDateColumn,
   OneToMany,
 } from 'typeorm';
-import { OrderItemStatus } from '../../common/enums';
+import { OrderItemApprovalStatus, OrderItemStatus } from '../../common/enums';
 import { Order } from './order.entity';
 import { OrderItemAddon } from './order-item-addon.entity';
 
@@ -51,11 +51,35 @@ export class OrderItem {
   @Column({ type: 'varchar', default: OrderItemStatus.PENDING })
   status: OrderItemStatus;
 
+  @Column({ type: 'varchar', nullable: true, default: OrderItemApprovalStatus.PENDING })
+  approvalStatus: OrderItemApprovalStatus;
+
   @Column({ nullable: true })
   kitchenStation: string;
 
   @Column({ nullable: true })
   notes: string;
+
+  @Column({ nullable: true })
+  routingDestination: string;
+
+  @Column({ nullable: true })
+  beverageId: string;
+
+  @Column({ type: 'float', nullable: true })
+  bottleSizeMl: number;
+
+  @Column({ nullable: true })
+  servingSize: string;
+
+  @Column({ default: false })
+  bottleOrderFlag: boolean;
+
+  @Column({ nullable: true })
+  approvedBy: string;
+
+  @Column({ nullable: true })
+  rejectionReason: string;
 
   @Column({ nullable: true })
   cookingStartedAt: Date;

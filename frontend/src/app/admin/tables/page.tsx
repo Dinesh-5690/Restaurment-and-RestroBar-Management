@@ -72,7 +72,7 @@ export default function TablesAdminPage() {
   const startEdit = (table: Table) => {
     setEditTableId(table.id);
     setEditForm({
-      tableNumber: table.tableNumber,
+      tableNumber: String(table.tableNumber),
       capacity: String(table.capacity ?? 4),
       location: table.location ?? '',
     });

@@ -7,8 +7,8 @@ import toast from 'react-hot-toast';
 import { Plus, RefreshCcw, Pencil, CheckCircle2, XCircle } from 'lucide-react';
 
 const salaryOptions: SalaryType[] = ['MONTHLY', 'DAILY', 'WEEKLY', 'BIWEEKLY'];
-const roleOptions: UserRole[] = ['ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN'];
-const accessOptions = ['DASHBOARD', 'POS', 'KITCHEN', 'APPROVAL', 'TABLES', 'KIOSK', 'ADMIN'] as AccessRight[];
+const roleOptions: UserRole[] = ['ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN', 'BEVERAGE_MANAGER'];
+const accessOptions: AccessRight[] = ['DASHBOARD', 'POS', 'KITCHEN', 'KITCHEN_INVENTORY', 'BEVERAGES', 'BOTTLE_MANAGEMENT', 'APPROVAL', 'TABLES', 'KIOSK', 'ADMIN'];
 
 const emptyFormState = {
   name: '',

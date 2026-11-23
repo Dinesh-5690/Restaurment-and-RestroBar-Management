@@ -1,339 +1,171 @@
 'use client';
-import { useState } from 'react';
-import { Order } from '@/types';
-import { approvalApi, kitchenApi } from '@/lib/api';
+
+import { useEffect, useState } from 'react';
+import { Order, OrderItem, OrderItemApprovalHistory } from '@/types';
+import { approvalApi } from '@/lib/api';
 import toast from 'react-hot-toast';
-import { XCircle, Flame, Clock, User, Phone, Hash } from 'lucide-react';
+import { Check, Clock, History, Minus, Phone, Plus, User, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 
-interface Props {
-  order: Order;
-  onAction: () => void;
-  compact?: boolean;
-}
+interface Props { order: Order; onAction: () => void; compact?: boolean }
 
 const itemStatusStyles: Record<string, string> = {
-  PENDING: 'bg-gray-100 text-gray-600',
-  QUEUED: 'bg-blue-100 text-blue-700',
-  COOKING: 'bg-orange-100 text-orange-700',
-  READY: 'bg-green-100 text-green-700',
-  SERVED: 'bg-emerald-100 text-emerald-700',
+  PENDING: 'bg-amber-100 text-amber-800', QUEUED: 'bg-blue-100 text-blue-700',
+  COOKING: 'bg-orange-100 text-orange-700', READY: 'bg-green-100 text-green-700',
+  SERVED: 'bg-emerald-100 text-emerald-700', REJECTED: 'bg-red-100 text-red-700',
+  REMOVED: 'bg-gray-100 text-gray-600',
 };
+const getErrorMessage = (error: any) => error.response?.data?.message || 'Please try again.';
 
 export default function ApprovalCard({ order, onAction, compact = false }: Props) {
-  const [rejectModal, setRejectModal] = useState(false);
-  const [rejectReason, setRejectReason] = useState('');
-  const [loading, setLoading] = useState<string | null>(null);
+  const [displayOrder, setDisplayOrder] = useState(order);
+  const [loadingItem, setLoadingItem] = useState<string | null>(null);
+  const [orderActionLoading, setOrderActionLoading] = useState<'FIRE' | 'REJECT' | null>(null);
+  const [wholeRejectOpen, setWholeRejectOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [history, setHistory] = useState<OrderItemApprovalHistory[]>([]);
 
-  const handleReject = async () => {
-    if (!rejectReason.trim()) return toast.error('Provide a rejection reason');
-    setLoading('reject');
+  useEffect(() => setDisplayOrder(order), [order]);
+  const elapsed = Math.floor((Date.now() - new Date(displayOrder.createdAt).getTime()) / 60000);
+  const isPending = (item: OrderItem) => displayOrder.status === 'APPROVAL_PENDING' && item.status === 'PENDING' && (item.approvalStatus ?? 'PENDING') === 'PENDING';
+  const isBeverage = (item: OrderItem) => !!item.beverageId || item.routingDestination === 'BILLING';
+
+  const saveQuantity = async (item: OrderItem, quantity: number) => {
+    setLoadingItem(item.id);
     try {
-      await approvalApi.reject(order.id, rejectReason);
-      toast.success('Order rejected');
-      setRejectModal(false);
+      const response = await approvalApi.editItem(displayOrder.id, item.id, {
+        menuItemName: item.menuItemName, quantity,
+        category: isBeverage(item) ? 'BEVERAGE' : 'FOOD',
+        unitPrice: Number(item.unitPrice), notes: item.notes ?? '',
+        bottleOrderFlag: item.beverageId ? !!item.bottleOrderFlag : undefined,
+        bottleSizeMl: item.beverageId && item.bottleOrderFlag ? Number(item.bottleSizeMl) : undefined,
+        servingSize: item.beverageId ? item.bottleOrderFlag ? 'BOTTLE' : item.servingSize || '30ML' : undefined,
+      });
+      setDisplayOrder(response.data);
+      toast.success('Quantity updated');
       onAction();
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error');
-    } finally {
-      setLoading(null);
-    }
+    } catch (error: any) { toast.error(getErrorMessage(error)); }
+    finally { setLoadingItem(null); }
   };
 
-  const handleApproveAndFire = async () => {
-    setLoading('approvefire');
-    try {
-      await approvalApi.approve(order.id);
-      const pendingItemIds = order.items
-        .filter((item) => item.status === 'PENDING')
-        .map((item) => item.id);
-
-      if (pendingItemIds.length > 0) {
-        await kitchenApi.fireItems(order.id, pendingItemIds);
-      }
-      toast.success('Approved & fired to kitchen!');
-      onAction();
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Error');
-    } finally {
-      setLoading(null);
+  const changeQuantity = async (item: OrderItem, delta: -1 | 1) => {
+    if (!isPending(item) || loadingItem || orderActionLoading) return;
+    if (delta === -1 && item.quantity === 1) {
+      if (!window.confirm(`Remove ${item.menuItemName} from this order?`)) return;
+      setLoadingItem(item.id);
+      try {
+        const response = await approvalApi.removeItem(displayOrder.id, item.id, 'Quantity decreased to zero');
+        setDisplayOrder(response.data);
+        toast.success('Item removed from this order');
+        onAction();
+      } catch (error: any) { toast.error(getErrorMessage(error)); }
+      finally { setLoadingItem(null); }
+      return;
     }
+    await saveQuantity(item, item.quantity + delta);
   };
 
-  const elapsed = Math.floor((Date.now() - new Date(order.createdAt).getTime()) / 60000);
+  const toggleHistory = async () => {
+    if (!historyOpen && history.length === 0) {
+      setHistoryLoading(true);
+      try { const response = await approvalApi.itemHistory(displayOrder.id); setHistory(response.data); }
+      catch (error: any) { toast.error(getErrorMessage(error)); return; }
+      finally { setHistoryLoading(false); }
+    }
+    setHistoryOpen((open) => !open);
+  };
 
-  if (compact) {
-    return (
-      <>
-        <div className={clsx('card border-l-4 flex flex-col', elapsed > 5 ? 'border-l-red-400' : 'border-l-amber-400')}>
-          {/* Compact top row */}
-          <div className="flex items-center gap-1.5 px-3 pt-3 pb-1 flex-wrap">
-            {order.tableNumber ? (
-              <span className="badge badge-blue font-bold">T{order.tableNumber}</span>
-            ) : (
-              <span className="text-xs font-semibold text-gray-700">QR</span>
-            )}
-            {order.billNo && (
-              <span className="flex items-center gap-0.5 text-[10px] font-mono text-gray-500 bg-gray-100 rounded px-1.5 py-0.5">
-                <Hash className="w-2.5 h-2.5" />{order.billNo}
-              </span>
-            )}
-            {elapsed > 5 && (
-              <span className="badge badge-red text-[10px]">⚠ {elapsed}m</span>
-            )}
-            <span className="ml-auto font-bold text-orange-600 text-sm">₹{Number(order.totalAmount).toFixed(2)}</span>
-          </div>
+  const fireOrder = async () => {
+    setOrderActionLoading('FIRE');
+    try {
+      await approvalApi.approve(displayOrder.id);
+      toast.success('Pending items approved; food sent to Kitchen and beverages sent to billing');
+      onAction();
+    } catch (error: any) { toast.error(getErrorMessage(error)); }
+    finally { setOrderActionLoading(null); }
+  };
 
-          {/* Time + item count */}
-          <div className="flex items-center gap-1 text-[10px] text-gray-400 px-3 pb-1">
-            <Clock className="w-2.5 h-2.5" />
-            {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            &nbsp;·&nbsp;{order.items.length} item{order.items.length !== 1 ? 's' : ''}
-          </div>
+  const rejectOrder = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!reason.trim()) return toast.error('Enter an order rejection reason');
+    setOrderActionLoading('REJECT');
+    try {
+      await approvalApi.reject(displayOrder.id, reason.trim());
+      toast.success('Pending items in the order were rejected');
+      setWholeRejectOpen(false); setReason(''); onAction();
+    } catch (error: any) { toast.error(getErrorMessage(error)); }
+    finally { setOrderActionLoading(null); }
+  };
 
-          {/* Items — always visible */}
-          <div className="px-3 pb-1 space-y-0.5">
-            {order.items.map((item) => (
-              <div key={item.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-x-1.5 items-center text-xs text-gray-600 py-0.5 border-b border-gray-50 last:border-0">
-                <div className="truncate">
-                  <div className="truncate pr-2">{item.menuItemName}</div>
-                  {item.addOns && item.addOns.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-0.5">
-                      {item.addOns.map((addon) => (
-                        <span key={addon.id} className="text-[8px] bg-orange-50 text-orange-700 border border-orange-200 rounded px-1 py-0.5 inline-block">
-                          +{addon.addonName}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <span className={clsx('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase', itemStatusStyles[item.status] || 'bg-gray-100 text-gray-600')}>
-                  {item.status}
-                </span>
-                <span className="shrink-0 text-gray-500">×{item.quantity}</span>
-                <span className="shrink-0 font-medium text-gray-700">₹{Number(item.lineTotal).toFixed(0)}</span>
-              </div>
-            ))}
-            {order.notes && (
-              <div className="text-[10px] text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1">
-                {order.notes}
-              </div>
-            )}
+  return <>
+    <article className={clsx('card border-l-4 p-4', compact ? 'text-sm' : 'p-5', elapsed > 5 ? 'border-l-red-400' : 'border-l-amber-400')}>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-bold text-gray-900">{displayOrder.orderType === 'QR' ? 'QR Order' : displayOrder.orderType === 'ONLINE' ? 'Online Order' : 'Dine-In Order'}</span>
+            {displayOrder.tableNumber != null && <span className="badge badge-blue">Table {displayOrder.tableNumber}</span>}
+            {elapsed > 5 && <span className="badge badge-red">{elapsed}m waiting</span>}
           </div>
-
-          {/* Bill summary */}
-          <div className="mx-3 mt-1 mb-2 pt-1 border-t border-gray-100 flex justify-between text-[10px] text-gray-500">
-            <span>Subtotal</span>
-            <span>₹{Number(order.subtotal).toFixed(2)}</span>
-          </div>
-          <div className="mx-3 mb-1 flex justify-between text-[10px] text-gray-400">
-            <span>Tax</span>
-            <span>₹{Number(order.taxAmount).toFixed(2)}</span>
-          </div>
-
-          {/* Actions */}
-          <div className="grid grid-cols-2 gap-1.5 px-3 pb-3 pt-1.5 mt-auto">
-            <button
-              onClick={handleApproveAndFire}
-              disabled={!!loading}
-              className="flex items-center justify-center gap-1 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white rounded-lg text-xs font-semibold"
-            >
-              <Flame className="w-3 h-3" />
-              {loading === 'approvefire' ? '...' : 'Fire'}
-            </button>
-            <button
-              onClick={() => setRejectModal(true)}
-              disabled={!!loading}
-              className="flex items-center justify-center gap-1 py-1.5 border border-red-300 bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-600 rounded-lg text-xs font-semibold"
-            >
-              <XCircle className="w-3 h-3" />
-              Reject
-            </button>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
+            <span>Order #{displayOrder.id.slice(0, 8)}</span>{displayOrder.billNo && <span>Bill {displayOrder.billNo}</span>}
+            <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{new Date(displayOrder.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
           </div>
         </div>
-
-        {/* Reject Modal */}
-        {rejectModal && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
-              <h3 className="font-bold text-gray-900 mb-3">Reject Order #{order.id.slice(0, 8)}</h3>
-              <textarea
-                className="w-full border border-gray-200 rounded-lg p-3 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
-                rows={3}
-                placeholder="Reason for rejection…"
-                value={rejectReason}
-                onChange={(e) => setRejectReason(e.target.value)}
-              />
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setRejectModal(false)}
-                  className="flex-1 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleReject}
-                  disabled={loading === 'reject'}
-                  className="flex-1 py-2 bg-red-500 hover:bg-red-600 disabled:opacity-60 text-white rounded-lg text-sm font-semibold"
-                >
-                  {loading === 'reject' ? '...' : 'Confirm Reject'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </>
-    );
-  }
-
-  return (
-    <>
-      <div className={clsx('card p-5 border-l-4', elapsed > 5 ? 'border-l-red-400' : 'border-l-amber-400')}>
-        {/* Header */}
-        <div className="flex items-start justify-between mb-2">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-gray-900">
-                {order.orderType === 'QR' ? 'QR Order' : 'Online Order'}
-              </span>
-              {order.tableNumber && (
-                <span className="badge badge-blue">Table {order.tableNumber}</span>
-              )}
-              {elapsed > 5 && (
-                <span className="badge badge-red">⚠ {elapsed}m waiting</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2 mt-0.5">
-              {order.billNo && (
-                <span className="flex items-center gap-0.5 text-xs font-mono font-semibold text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">
-                  <Hash className="w-3 h-3" />{order.billNo}
-                </span>
-              )}
-              <span className="text-xs text-gray-400">ID: {order.id.slice(0, 8)}</span>
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="font-bold text-orange-600">₹{Number(order.totalAmount).toFixed(2)}</div>
-            <div className="text-xs text-gray-400 flex items-center gap-1 justify-end">
-              <Clock className="w-3 h-3" />
-              {new Date(order.createdAt).toLocaleTimeString()}
-            </div>
-          </div>
-        </div>
-
-        {/* Customer */}
-        {(order.customerName || order.customerPhone) && (
-          <div className="flex gap-3 text-xs text-gray-500 mb-2">
-            {order.customerName && (
-              <span className="flex items-center gap-1">
-                <User className="w-3 h-3" /> {order.customerName}
-              </span>
-            )}
-            {order.customerPhone && (
-              <span className="flex items-center gap-1">
-                <Phone className="w-3 h-3" /> {order.customerPhone}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Items — always visible */}
-        <div className="mb-2">
-          <div className="text-xs font-medium text-gray-500 mb-1">{order.items.length} item(s)</div>
-          <div className="space-y-0.5">
-            {order.items.map((item) => (
-              <div key={item.id} className="py-1 border-b border-gray-50">
-                <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-3 items-center text-xs text-gray-600">
-                  <span className="truncate">{item.menuItemName}</span>
-                  <span className={clsx('rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase text-center', itemStatusStyles[item.status] || 'bg-gray-100 text-gray-600')}>
-                    {item.status}
-                  </span>
-                  <span className="text-gray-400 text-right">×{item.quantity} @ ₹{Number(item.unitPrice).toFixed(2)}</span>
-                  <span className="font-semibold text-gray-800 text-right">₹{Number(item.lineTotal).toFixed(2)}</span>
-                </div>
-                {item.addOns && item.addOns.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {item.addOns.map((addon) => (
-                      <span key={addon.id} className="text-[8px] bg-orange-50 text-orange-700 border border-orange-200 rounded px-1.5 py-0.5">
-                        +{addon.addonName} {Number(addon.unitPrice) > 0 ? `₹${Number(addon.unitPrice).toFixed(2)}` : '(free)'}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          {/* Bill summary */}
-          <div className="mt-2 space-y-0.5 border-t border-gray-100 pt-2">
-            <div className="flex justify-between text-xs text-gray-500">
-              <span>Subtotal</span><span>₹{Number(order.subtotal).toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-xs text-gray-400">
-              <span>Tax</span><span>₹{Number(order.taxAmount).toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-xs font-bold text-gray-900">
-              <span>Total</span><span>₹{Number(order.totalAmount).toFixed(2)}</span>
-            </div>
-          </div>
-        </div>
-
-        {order.notes && (
-          <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-3">
-            Note: {order.notes}
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={handleApproveAndFire}
-            disabled={!!loading}
-            className="flex items-center justify-center gap-1.5 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white rounded-lg text-xs font-semibold"
-          >
-            <Flame className="w-3.5 h-3.5" />
-            {loading === 'approvefire' ? '...' : 'Approve & Fire'}
-          </button>
-          <button
-            onClick={() => setRejectModal(true)}
-            disabled={!!loading}
-            className="flex items-center justify-center gap-1.5 py-2 border border-red-300 bg-red-50 hover:bg-red-100 disabled:opacity-60 text-red-600 rounded-lg text-xs font-semibold"
-          >
-            <XCircle className="w-3.5 h-3.5" />
-            Reject
-          </button>
+        <div className="shrink-0 text-right">
+          <div className="font-bold text-amber-700">₹{Number(displayOrder.totalAmount).toFixed(2)}</div>
+          <button type="button" onClick={toggleHistory} disabled={historyLoading} className="mt-1 inline-flex items-center gap-1 text-xs text-gray-500 hover:text-amber-800 disabled:opacity-50"><History className="h-3.5 w-3.5" />{historyLoading ? 'Loading…' : historyOpen ? 'Hide history' : 'History'}</button>
         </div>
       </div>
+      {(displayOrder.customerName || displayOrder.customerPhone) && <div className="mb-3 flex flex-wrap gap-3 text-xs text-gray-500">
+        {displayOrder.customerName && <span className="inline-flex items-center gap-1"><User className="h-3 w-3" />{displayOrder.customerName}</span>}
+        {displayOrder.customerPhone && <span className="inline-flex items-center gap-1"><Phone className="h-3 w-3" />{displayOrder.customerPhone}</span>}
+      </div>}
 
-      {/* Reject Modal */}
-      {rejectModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
-            <h3 className="font-bold text-gray-900 mb-3">Reject Order</h3>
-            <textarea
-              className="w-full border border-gray-200 rounded-lg p-3 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
-              rows={3}
-              placeholder="Reason for rejection..."
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-            />
-            <div className="flex gap-3">
-              <button
-                onClick={() => setRejectModal(false)}
-                className="flex-1 border border-gray-200 rounded-lg py-2 text-sm hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleReject}
-                disabled={!!loading}
-                className="flex-1 bg-red-500 hover:bg-red-600 text-white rounded-lg py-2 text-sm font-semibold"
-              >
-                {loading === 'reject' ? 'Rejecting...' : 'Confirm Reject'}
-              </button>
+      <div className="space-y-2">{displayOrder.items.map((item) => {
+        const pending = isPending(item); const beverage = isBeverage(item); const busy = loadingItem === item.id;
+        return <section key={item.id} className="rounded-xl border border-gray-100 bg-white/70 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-gray-800">{item.menuItemName}</span>
+                <span className={clsx('rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase', beverage ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700')}>{beverage ? 'Beverage' : 'Food'}</span>
+                <span className={clsx('rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase', itemStatusStyles[item.status] || 'bg-gray-100 text-gray-600')}>{item.approvalStatus && item.approvalStatus !== 'PENDING' ? item.approvalStatus : item.status}</span>
+              </div>
+              <div className="mt-1 text-xs text-gray-500">₹{Number(item.unitPrice).toFixed(2)} each · Line total ₹{Number(item.lineTotal).toFixed(2)}{item.bottleOrderFlag && item.bottleSizeMl ? ` · ${item.bottleSizeMl}ml` : ''}</div>
+              {item.notes && <div className="mt-1 text-xs text-amber-800">Instruction: {item.notes}</div>}
+              {item.rejectionReason && <div className="mt-1 text-xs text-red-600">Reason: {item.rejectionReason}</div>}
+              {item.addOns?.length ? <div className="mt-1 text-xs text-gray-500">{item.addOns.map((addon) => `+ ${addon.addonName}`).join(', ')}</div> : null}
+            </div>
+            <div className="flex items-center gap-2" aria-label={`Quantity controls for ${item.menuItemName}`}>
+              <button type="button" onClick={() => changeQuantity(item, -1)} disabled={!pending || busy || !!loadingItem || !!orderActionLoading} aria-label={`Decrease ${item.menuItemName} quantity`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"><Minus className="h-4 w-4" /></button>
+              <span className="min-w-5 text-center text-sm font-semibold text-gray-800">{item.quantity}</span>
+              <button type="button" onClick={() => changeQuantity(item, 1)} disabled={!pending || busy || !!loadingItem || !!orderActionLoading} aria-label={`Increase ${item.menuItemName} quantity`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"><Plus className="h-4 w-4" /></button>
             </div>
           </div>
-        </div>
-      )}
-    </>
-  );
+        </section>;
+      })}</div>
+
+      {displayOrder.items.some(isPending) && <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-gray-100 pt-3">
+        <button type="button" onClick={() => { setReason(''); setWholeRejectOpen(true); }} disabled={!!orderActionLoading} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"><XCircle className="h-3.5 w-3.5" /> Reject Order</button>
+        <button type="button" onClick={fireOrder} disabled={!!orderActionLoading || !!loadingItem} className="inline-flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-2 text-xs font-semibold text-white hover:bg-green-800 disabled:opacity-50"><Check className="h-3.5 w-3.5" />{orderActionLoading === 'FIRE' ? 'Firing…' : 'Fire Order'}</button>
+      </div>}
+      {displayOrder.notes && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">Order note: {displayOrder.notes}</div>}
+      <div className="mt-3 border-t border-gray-100 pt-2 text-xs text-gray-500">
+        <div className="flex justify-between"><span>Subtotal</span><span>₹{Number(displayOrder.subtotal).toFixed(2)}</span></div>
+        <div className="mt-1 flex justify-between"><span>Tax</span><span>₹{Number(displayOrder.taxAmount).toFixed(2)}</span></div>
+      </div>
+      {historyOpen && <div className="mt-4 border-t border-gray-100 pt-3">
+        <h3 className="mb-2 text-sm font-semibold text-gray-800">Item history</h3>
+        {history.length === 0 ? <p className="text-xs text-gray-500">No recorded item changes.</p> : <div className="space-y-2">{history.map((entry) => <details key={entry.id} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2"><summary className="cursor-pointer text-xs font-medium text-gray-700">{entry.action} · item {entry.orderItemId.slice(0, 8)} · {new Date(entry.createdAt).toLocaleString()} · user {entry.actorUserId.slice(0, 8)}{entry.reason ? ` · ${entry.reason}` : ''}</summary><div className="mt-2 grid gap-2 sm:grid-cols-2"><pre className="overflow-auto rounded bg-white p-2 text-[10px] text-gray-600">{entry.beforeSnapshot}</pre>{entry.afterSnapshot && <pre className="overflow-auto rounded bg-white p-2 text-[10px] text-gray-600">{entry.afterSnapshot}</pre>}</div></details>)}</div>}
+      </div>}
+    </article>
+
+    {wholeRejectOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"><form onSubmit={rejectOrder} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+      <h2 className="mb-1 text-lg font-bold text-gray-900">Reject pending order items?</h2><p className="mb-4 text-sm text-gray-600">This rejects only items still awaiting approval. Previously approved or fired items remain unchanged.</p>
+      <label className="block"><span className="mb-1 block text-xs font-semibold text-gray-600">Rejection reason (required)</span><textarea required minLength={1} rows={3} value={reason} onChange={(e) => setReason(e.target.value)} className="w-full rounded-lg border px-3 py-2 text-sm" /></label>
+      <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setWholeRejectOpen(false)} className="rounded-lg border px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Cancel</button><button type="submit" disabled={!!orderActionLoading} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50">{orderActionLoading === 'REJECT' ? 'Rejecting…' : 'Reject Pending Items'}</button></div>
+    </form></div>}
+  </>;
 }

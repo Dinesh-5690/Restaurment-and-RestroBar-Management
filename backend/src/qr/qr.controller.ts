@@ -14,4 +14,14 @@ export class QrController {
   getMenuForTable(@Param('qrCodeId') qrCodeId: string) {
     return this.qrService.getMenuForTable(qrCodeId);
   }
+
+  @Get(':qrCodeId/active-order')
+  getActiveOrder(@Param('qrCodeId') qrCodeId: string) {
+    return this.qrService.getActiveOrderForTable(qrCodeId);
+  }
+
+  @Get(':qrCodeId/session')
+  getSession(@Param('qrCodeId') qrCodeId: string) {
+    return this.qrService.getSessionForTable(qrCodeId);
+  }
 }

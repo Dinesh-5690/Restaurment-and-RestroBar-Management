@@ -1,0 +1,3 @@
+import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+@Entity('kitchen_inventory_alerts')
+export class InventoryAlert { @PrimaryGeneratedColumn('uuid') id: string; @Column() materialId: string; @Column() materialName: string; @Column() alertType: 'LOW_STOCK'|'OUT_OF_STOCK'|'EXPIRING_SOON'|'EXPIRED'; @Column({ type: 'decimal', precision: 12, scale: 3 }) availableQuantity: number; @Column({ type: 'decimal', precision: 12, scale: 3 }) minimumStockLevel: number; @Column({ default: false }) resolved: boolean; @Column({ nullable: true }) resolvedBy: string; @CreateDateColumn() createdAt: Date; @UpdateDateColumn() updatedAt: Date; }

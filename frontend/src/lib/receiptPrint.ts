@@ -16,6 +16,8 @@ export interface ReceiptPrintAddon {
 export interface ReceiptPrintItem {
   menuItemName: string;
   quantity: number;
+  isBeverage?: boolean;
+  bottleSizeMl?: number;
   unitPrice: number;
   lineTotal: number;
   notes?: string;
@@ -77,6 +79,8 @@ export function buildReceiptPayloadFromOrder(order: Order, options: BuildReceipt
     quantity: Number(item.quantity || 0),
     unitPrice: Number(item.unitPrice || 0),
     lineTotal: Number(item.lineTotal || 0),
+    isBeverage: !!item.beverageId,
+    bottleSizeMl: Number(item.bottleSizeMl || 0) || undefined,
     notes: item.notes,
     addOns: [...(item.addOns || [])]
       .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')))
@@ -185,7 +189,7 @@ export function buildReceiptHtml(payload: ReceiptPrintPayload): string {
     return `
       <div class="item-row">
         <div class="item-main">
-          <span>${item.quantity}x</span>
+          <span>${item.quantity}x${item.isBeverage && item.bottleSizeMl ? `<br>${item.quantity * item.bottleSizeMl}ml` : ''}</span>
           <span>${escapeHtml(item.menuItemName)}</span>
           <span class="right">${Number(item.unitPrice || 0).toFixed(2)}</span>
           <span class="right amount">${Number(item.lineTotal || 0).toFixed(2)}</span>
@@ -209,6 +213,13 @@ export function buildReceiptHtml(payload: ReceiptPrintPayload): string {
     : payload.items.map(itemRowHtml).join('');
 
   const totalQty = payload.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const totalBeverageQty = payload.items
+    .filter((item) => item.isBeverage)
+    .reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const beverageVolumeMl = payload.items
+    .filter((item) => item.isBeverage)
+    .reduce((sum, item) => sum + Number(item.bottleSizeMl || 0) * Number(item.quantity || 0), 0);
+  const formatVolume = (ml: number) => ml >= 1000 ? `${ml}ml (${(ml / 1000).toFixed(2)} Litres)` : `${ml}ml`;
   const couponLine = payload.discountAmount > 0
     ? `<div class="line"><span>Coupon${payload.couponCode ? ` (${escapeHtml(payload.couponCode)})` : ''}</span><span>-${formatCurrency(payload.discountAmount)}</span></div>`
     : '';
@@ -291,7 +302,8 @@ export function buildReceiptHtml(payload: ReceiptPrintPayload): string {
           </div>
           ${itemsHtml || '<div class="center" style="font-size:9px;color:#6b7280;padding:8px 0;">No item details available</div>'}
           <div class="receipt-print-line"></div>
-          <div class="line"><span>Tot Qty: ${totalQty}</span><span>Subtotal: ${formatCurrency(payload.subtotal)}</span></div>
+          <div class="line"><span>${totalBeverageQty > 0 ? `Total Bottles: ${totalBeverageQty}` : `Total Quantity: ${totalQty}`}</span><span>Subtotal: ${formatCurrency(payload.subtotal)}</span></div>
+          ${totalBeverageQty > 0 ? `<div class="line"><span>Total Beverage Volume</span><span>${formatVolume(beverageVolumeMl)}</span></div>` : ''}
           ${couponLine}
           <div class="line net"><span>NET TOTAL</span><span>${formatCurrency(payload.netTotal)}</span></div>
           <div class="receipt-print-line"></div>
