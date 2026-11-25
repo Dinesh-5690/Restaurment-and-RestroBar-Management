@@ -618,18 +618,18 @@ export default function QROrderPage({ qrCodeId }: { qrCodeId: string }) {
             { size: `${product.bottleSize}ml Bottle`, price: Number(product.bottlePrice), bottle: true },
           ].filter((option) => option.price > 0);
           return (
-            <div key={product.id} className="card p-4">
-              <div className="mb-3">
-                <div className="font-semibold text-gray-900">{productName}</div>
-                <p className="text-xs text-gray-500">Choose a serving size</p>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div key={product.id} className="card p-3">
+                <div className="mb-2">
+                  <div className="font-semibold text-gray-900">{productName}</div>
+                  <p className="text-xs text-gray-500">Choose a serving size</p>
+                </div>
+                <div className="grid grid-cols-1 gap-1.5">
                 {servingOptions.map((option) => {
                   const servingSize = option.bottle ? 'BOTTLE' : option.size;
                   const lineId = `beverage:${product.id}:${servingSize}`;
                   const quantity = getQty(lineId);
                   return (
-                    <div key={servingSize} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2">
+                      <div key={servingSize} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-1.5">
                       <div className="min-w-0">
                         <div className="text-xs font-semibold text-gray-700">{option.size}</div>
                         <div className="text-sm font-bold text-orange-600">₹{option.price.toFixed(2)}</div>
@@ -639,7 +639,7 @@ export default function QROrderPage({ qrCodeId }: { qrCodeId: string }) {
                         type="button"
                         onClick={() => addBeverage(product, servingSize, option.bottle)}
                         aria-label={`Add ${productName} ${option.size} to order`}
-                        className="shrink-0 flex items-center gap-1.5 rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
+                          className="shrink-0 flex items-center gap-1 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-semibold text-white"
                       >
                         <Plus className="h-4 w-4" /> Add
                       </button>
