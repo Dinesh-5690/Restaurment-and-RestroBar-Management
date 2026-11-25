@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { MenuSection, MenuItem } from '@/types';
 import { menuApi, beveragesApi } from '@/lib/api';
 import { usePOSStore } from '@/store/usePOSStore';
-import { Search, Tag } from 'lucide-react';
+import { Plus, Search, Tag } from 'lucide-react';
 import clsx from 'clsx';
 import AddonPickerModal from './AddonPickerModal';
 
@@ -77,14 +77,52 @@ export default function MenuPanel({ onAddItem }: Props) {
             <div className="font-bold text-orange-600">₹{Number(item.price).toFixed(2)}</div>
           </button>
         ))}
-        {primary === 'beverages' && beverages.filter((b) => b.active && (beverageCategory === 'all' || b.categoryId === beverageCategory)).filter((b) => `${b.brand} ${b.productName}`.toLowerCase().includes(search.toLowerCase())).map((b) => (
-          <div key={b.id} className="card p-3 text-left">
-            {b.imagePath && <img src={b.imagePath} alt="" className="w-full h-20 object-cover rounded mb-2" />}
-            <div className="font-semibold text-sm text-gray-900">{b.brand}</div>
-            <div className="text-xs text-gray-500 mb-2">{b.bottleSize === 180 ? 'Quarter' : b.bottleSize === 375 ? 'Half' : 'Full'} · {b.bottleSize}ml</div>
-            <button onClick={() => addBeverageToCart({ id: b.id, brand: b.brand, productName: b.productName, unitPrice: Number(b.bottlePrice), servingSize: `${b.bottleSize}ML`, bottleOrderFlag: true })} className="w-full rounded bg-amber-50 px-2 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100">Add · ₹{Number(b.bottlePrice).toFixed(2)}</button>
-          </div>
-        ))}
+        {primary === 'beverages' && beverages.filter((b) => b.active && (beverageCategory === 'all' || b.categoryId === beverageCategory)).filter((b) => `${b.brand} ${b.productName}`.toLowerCase().includes(search.toLowerCase())).map((b) => {
+          const productName = `${b.brand}${b.productName ? ` ${b.productName}` : ''}`;
+          const servingOptions = [
+            { label: '30ml', servingSize: '30ML', price: Number(b.price30ml), bottleOrderFlag: false },
+            { label: '60ml', servingSize: '60ML', price: Number(b.price60ml), bottleOrderFlag: false },
+            { label: '90ml', servingSize: '90ML', price: Number(b.price90ml), bottleOrderFlag: false },
+            {
+              label: `${Number(b.bottleSize) === 180 ? 'Quarter' : Number(b.bottleSize) === 375 ? 'Half' : Number(b.bottleSize) === 750 ? 'Full' : 'Bottle'} · ${b.bottleSize}ml`,
+              servingSize: 'BOTTLE',
+              price: Number(b.bottlePrice),
+              bottleOrderFlag: true,
+            },
+          ].filter((option) => option.price > 0);
+
+          return (
+            <div key={b.id} className="card p-3 text-left">
+              {b.imagePath && <img src={b.imagePath} alt="" className="w-full h-20 object-cover rounded mb-2" />}
+              <div className="font-semibold text-sm text-gray-900 mb-2">{productName}</div>
+              <div className="space-y-2">
+                {servingOptions.map((option) => (
+                  <div key={option.servingSize} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2 py-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-gray-600">{option.label}</div>
+                      <div className="font-bold text-orange-600">₹{option.price.toFixed(2)}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => addBeverageToCart({
+                        id: b.id,
+                        brand: b.brand,
+                        productName: b.productName || '',
+                        unitPrice: option.price,
+                        servingSize: option.servingSize,
+                        bottleOrderFlag: option.bottleOrderFlag,
+                      })}
+                      aria-label={`Add ${productName} ${option.label} to order`}
+                      className="shrink-0 flex items-center gap-1.5 rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white"
+                    >
+                      <Plus className="h-4 w-4" /> Add
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
         {primary === 'food' && filteredItems.length === 0 && <div className="col-span-3 text-center text-gray-400 text-sm py-12">No items found</div>}
       </div>
 

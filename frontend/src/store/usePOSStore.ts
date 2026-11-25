@@ -62,11 +62,26 @@ export const usePOSStore = create<POSState>((set, get) => ({
   },
 
   addBeverageToCart: (item) => {
-    const cartLineId = `${item.id}-${item.servingSize}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    set({ cart: [...get().cart, {
+    const currentCart = get().cart;
+    const existing = currentCart.find((cartItem) =>
+      cartItem.beverageId === item.id &&
+      cartItem.servingSize === item.servingSize &&
+      !!cartItem.bottleOrderFlag === !!item.bottleOrderFlag,
+    );
+
+    if (existing) {
+      set({ cart: currentCart.map((cartItem) => cartItem.cartLineId === existing.cartLineId
+        ? { ...cartItem, quantity: cartItem.quantity + 1 }
+        : cartItem) });
+      return;
+    }
+
+    const cartLineId = `beverage:${item.id}:${item.bottleOrderFlag ? 'BOTTLE' : item.servingSize}`;
+    const bottleLabel = item.bottleOrderFlag ? ` Bottle (${item.servingSize})` : ` (${item.servingSize})`;
+    set({ cart: [...currentCart, {
       cartLineId,
       menuItemId: item.id,
-      menuItemName: `${item.brand} ${item.productName}${item.bottleOrderFlag ? ' (Bottle)' : ` (${item.servingSize})`}`,
+      menuItemName: `${item.brand}${item.productName ? ` ${item.productName}` : ''}${bottleLabel}`,
       unitPrice: item.unitPrice,
       quantity: 1,
       beverageId: item.id,

@@ -88,6 +88,7 @@ export default function HomePage() {
         if (mod.access === 'ALWAYS') return !user; // Hide login if the user is already logged in
         if (!user) return false;
         if (user.role === 'ADMIN') return true; // Master Admin role sees everything
+        if (mod.href === '/bottle-management') return user.role === 'MANAGER' || user.role === 'CASHIER';
         if (user.role === 'WAITER' && mod.access === 'APPROVAL') return true;
         if (user.role === 'BEVERAGE_MANAGER' && mod.access === 'BEVERAGES') return true;
         return user.accessRights?.includes(mod.access as any);
